@@ -83,14 +83,16 @@ Idempotency-Key: <unique-key>
 
 Request
 
-console.log('{
+```
+{
   "eventId": "uuid",
   "lockId": "uuid",
   "provider": "RAZORPAY"
-}')
+}
+```
 
 Response
-
+```
 {
   "paymentId": "uuid",
   "eventId": "uuid",
@@ -100,10 +102,23 @@ Response
   "status": "PENDING",
   "providerOrderId": "order_12345"
 }
-Get Payment Status
+```
+
+###### API flow
+```
+Client → Payment Service
+      identifiers only
+
+Payment Service → Seat Allocation
+      fetch amount + currency
+
+Seat Allocation
+      authoritative price source
+```
+
+#### Get Payment Status
 
 GET
-
 /api/v1/payments/{paymentId}
 
 Headers
@@ -111,7 +126,7 @@ Headers
 Authorization: Bearer <JWT>
 
 Response
-
+```
 {
   "paymentId": "uuid",
   "eventId": "uuid",
@@ -121,59 +136,58 @@ Response
   "status": "SUCCESS",
   "providerPaymentId": "pay_abc123"
 }
+```
 
-Cancel Payment Attempt
+#### Cancel Payment Attempt
 
 POST
-
 /api/v1/payments/{paymentId}/cancel
 
 Cancels a payment that has not yet completed.
 
-Internal APIs
-Payment Webhook (Provider Callback)
+### Internal APIs
+
+#### Payment Webhook (Provider Callback)
 
 POST
-
 /internal/v1/payments/webhook
 
 Purpose:
+- verify provider signature
+- update payment status
+- trigger seat booking confirmation
 
-verify provider signature
-
-update payment status
-
-trigger seat booking confirmation
-
-Reconcile Payment
+#### Reconcile Payment
 
 POST
-
 /internal/v1/payments/{paymentId}/reconcile
 
 Purpose:
-
 retry booking confirmation if payment succeeded but downstream booking failed.
 
 # Internal Service Calls
+```
 Seat Allocation → Payment
 
 Not required.
 
 Payment → Seat Allocation
-Get Lock Summary
+```
+
+#### Get Lock Summary
 GET /internal/v1/locks/{lockId}/summary
 
 Returns authoritative payable amount.
 
-Confirm Booking
+#### Confirm Booking
 POST /internal/v1/locks/{lockId}/confirm-booking
 
 Used after payment success.
 
 Request
-
+```
 {
   "paymentId": "uuid",
   "providerPaymentId": "pay_abc123"
 }
+```

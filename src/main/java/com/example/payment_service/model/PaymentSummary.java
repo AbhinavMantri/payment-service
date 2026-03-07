@@ -1,6 +1,4 @@
-package com.example.payment_service.dto;
-
-import com.example.payment_service.model.PaymentStatus;
+package com.example.payment_service.model;
 
 import lombok.Data;
 

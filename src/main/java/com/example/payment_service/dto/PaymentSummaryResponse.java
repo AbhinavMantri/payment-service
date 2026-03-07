@@ -1,0 +1,11 @@
+package com.example.payment_service.dto;
+
+import com.example.payment_service.dto.common.ApiResponse;
+import com.example.payment_service.model.PaymentSummary;
+
+import lombok.Data;
+
+@Data
+public class PaymentSummaryResponse extends ApiResponse {
+    private PaymentSummary payment;
+}
