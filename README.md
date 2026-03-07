@@ -1,84 +1,79 @@
 # Payment Service
-# Purpose
+## Purpose
 
 payment-service manages the payment lifecycle for ticket bookings.
 It integrates with payment providers, tracks payment status, processes webhooks, and confirms seat bookings through the seat-allocation-service.
 
 It does not manage seats or events; those belong to other services.
 
-# Entities
-Payment
+## Entities
 
+### Payment
 Represents a payment attempt initiated for locked seats.
 
 
-Fields
+#### Fields
 
-Field	Type	Description
-id	UUID	Primary identifier
-userId	UUID	User initiating payment
-eventId	UUID	Associated event
-lockId	UUID	Seat lock reference
-amountMinor	BIGINT	Amount in minor units of currency
-currency	VARCHAR(3)	ISO currency code
-provider	VARCHAR	Payment provider
-status	VARCHAR	Current payment status
-providerOrderId	VARCHAR	Order reference from payment gateway
-providerPaymentId	VARCHAR	Payment reference from provider
-failureReason	VARCHAR	Failure message if payment fails
-createdAt	TIMESTAMP	Creation time
-updatedAt	TIMESTAMP	Last update time
--------------------------
-PaymentStatus
+| Field	  | Type |	Description
+|:------------------|:----------:|--------------:|
+| id	              | UUID       |  Primary identifier
+| userId	          | UUID       |	User initiating payment
+| eventId	          | UUID       |	Associated event
+| lockId	          | UUID       |	Seat lock reference
+| amountMinor	      | BIGINT	   |  Amount in minor units of currency
+| currency	        | VARCHAR(3) |	ISO currency code
+| provider	        | VARCHAR	   | Payment provider
+| status	          | VARCHAR	   | Current payment status
+| providerOrderId   |	VARCHAR	   | Order reference from payment gateway
+| providerPaymentId	| VARCHAR	   | Payment reference from provider
+| failureReason	    | VARCHAR	   | Failure message if payment fails
+| createdAt	        | TIMESTAMP	 | Creation time
+| updatedAt	        | TIMESTAMP	 | Last update time
 
-CREATED
+### PaymentStatus
 
-PENDING
+- CREATED
+- PENDING
+- SUCCESS
+- FAILED
+- CANCELLED
+- SUCCESS_CONFIRMATION_FAILED
+- REFUNDED
 
-SUCCESS
-
-FAILED
-
-CANCELLED
-
-SUCCESS_CONFIRMATION_FAILED
-
-REFUNDED
-------------------------
-PaymentIdempotency
+### PaymentIdempotency
 
 Stores idempotency keys for safe retry of payment initiation.
 
-Field	Type	Description
-id	UUID	Primary identifier
-userId	UUID	Requesting user
-idempotencyKey	VARCHAR	Client provided key
-requestHash	VARCHAR	Hash of request payload
-paymentId	UUID	Associated payment
-createdAt	TIMESTAMP	Record creation time
-----------------------
+| Field	| Type |	Description
+|:------------------|:----------:|--------------:|
+| id	| UUID	| Primary identifier
+| userId |	UUID |	Requesting user
+| idempotencyKey |	VARCHAR |	Client provided key
+| requestHash	 | VARCHAR |	Hash of request payload
+| paymentId |	UUID |	Associated payment
+| createdAt	| TIMESTAMP |	Record creation time
 
-ProcessedWebhook
+### ProcessedWebhook
 
 Tracks provider webhook events that have already been processed.
 
-Field	Type	Description
-id	UUID	Primary identifier
-provider	VARCHAR	Payment provider
-providerEventId	VARCHAR	Unique provider event id
-processedAt	TIMESTAMP	Processing time
+| Field |	Type |	Description
+|:------------------|:----------:|--------------:|
+| id	| UUID	| Primary identifier
+| provider |	VARCHAR |	Payment provider
+|providerEventId	| VARCHAR	| Unique provider event id
+| processedAt	| TIMESTAMP |	Processing time
 
 Purpose: prevents duplicate webhook handling.
 
-# API Contract
+## API Contract
 
-Public APIs
-Initiate Payment
+### Public APIs
 
+#### Initiate Payment
 Creates a payment attempt for locked seats.
 
 POST
-
 /api/v1/payments/initiate
 
 Headers
@@ -88,11 +83,11 @@ Idempotency-Key: <unique-key>
 
 Request
 
-{
+console.log('{
   "eventId": "uuid",
   "lockId": "uuid",
   "provider": "RAZORPAY"
-}
+}')
 
 Response
 
@@ -126,6 +121,7 @@ Response
   "status": "SUCCESS",
   "providerPaymentId": "pay_abc123"
 }
+
 Cancel Payment Attempt
 
 POST
