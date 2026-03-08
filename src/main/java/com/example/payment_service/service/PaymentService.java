@@ -48,7 +48,7 @@ public class PaymentService {
                     .orElseThrow(() -> new PaymentNotFoundException("Stored idempotent payment not found"));
             return to(existingPayment);
         }
-
+        //TODO: fetch lock summary from seat allocation service
         Payment payment = new Payment();
         payment.setUserId(DEFAULT_USER_ID);
         payment.setEventId(request.getEventId());
