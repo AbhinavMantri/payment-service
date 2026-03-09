@@ -6,6 +6,8 @@ import com.example.payment_service.dto.common.ResponseStatus;
 import com.example.payment_service.exceptions.DuplicatePaymentFoundException;
 import com.example.payment_service.exceptions.PaymentNotFoundException;
 import com.example.payment_service.exceptions.PaymentVerificationFailedException;
+import com.example.payment_service.model.PaymentProvider;
+import com.example.payment_service.service.ReconcilePaymentResult;
 import com.example.payment_service.service.InternalPaymentService;
 import lombok.extern.slf4j.Slf4j;
 
@@ -35,14 +37,16 @@ public class InternalPaymentController {
     @PostMapping("/webhook")
     public ResponseEntity<WebhookResponse> handleWebhook(
             @RequestBody String rawPayload,
-            @RequestHeader("X-Razorpay-Signature") String signature
+            @RequestHeader(value = "X-Payment-Provider", required = false) String providerHeader,
+            @RequestHeader(value = "X-Payment-Signature", required = false) String genericSignature,
+            @RequestHeader(value = "X-Razorpay-Signature", required = false) String razorpaySignature
     ) {
         long startNanos = System.nanoTime();
-        log.info("internal-webhook request_start signaturePresent={}", signature != null && !signature.isBlank());
-
-        WebhookResponse response = new WebhookResponse();
         try {
-            response = internalPaymentService.handleWebhook(rawPayload, signature);
+            PaymentProvider provider = resolveProvider(providerHeader);
+            String signature = resolveSignature(provider, genericSignature, razorpaySignature);
+            log.info("internal-webhook request_start signaturePresent={}", signature != null && !signature.isBlank());
+            WebhookResponse response = internalPaymentService.handleWebhook(provider, rawPayload, signature);
             log.info(
                     "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={}",
                     response.getEventType(),
@@ -53,8 +57,7 @@ public class InternalPaymentController {
             );
             return ResponseEntity.ok(response);
         } catch (PaymentNotFoundException ex) {
-            response.setStatus(ResponseStatus.FAILURE);
-            response.setMessage(ex.getMessage());
+            WebhookResponse response = failureWebhookResponse(ex.getMessage());
             log.warn(
                     "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={} reason={}",
                     null,
@@ -66,8 +69,7 @@ public class InternalPaymentController {
             );
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
         } catch (DuplicatePaymentFoundException ex) {
-            response.setStatus(ResponseStatus.FAILURE);
-            response.setMessage(ex.getMessage());
+            WebhookResponse response = failureWebhookResponse(ex.getMessage());
             log.warn(
                     "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={} reason={}",
                     null,
@@ -79,8 +81,7 @@ public class InternalPaymentController {
             );
             return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
         } catch (IllegalArgumentException ex) {
-            response.setStatus(ResponseStatus.FAILURE);
-            response.setMessage(ex.getMessage());
+            WebhookResponse response = failureWebhookResponse(ex.getMessage());
             log.warn(
                     "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={} reason={}",
                     null,
@@ -92,8 +93,7 @@ public class InternalPaymentController {
             );
             return ResponseEntity.badRequest().body(response);
         } catch (PaymentVerificationFailedException ex) {
-            response.setStatus(ResponseStatus.FAILURE);
-            response.setMessage(ex.getMessage());
+            WebhookResponse response = failureWebhookResponse(ex.getMessage());
             log.warn(
                     "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={} reason={}",
                     null,
@@ -112,8 +112,9 @@ public class InternalPaymentController {
         long startNanos = System.nanoTime();
         log.info("internal-reconcile request_start paymentId={}", paymentId);
         try {
-            PaymentReconcileResponse response = internalPaymentService.reconcilePayment(paymentId);
-            HttpStatus httpStatus = response.getStatus() == ResponseStatus.SUCCESS ? HttpStatus.OK : HttpStatus.BAD_REQUEST;
+            ReconcilePaymentResult result = internalPaymentService.reconcilePayment(paymentId);
+            PaymentReconcileResponse response = toReconcileResponse(result);
+            HttpStatus httpStatus = result.isSuccess() ? HttpStatus.OK : HttpStatus.BAD_REQUEST;
             log.info(
                     "internal-reconcile request_end paymentId={} status={} paymentStatus={} refunded={} lockReleased={} httpStatus={} latencyMs={}",
                     paymentId,
@@ -144,5 +145,45 @@ public class InternalPaymentController {
 
     private long toLatencyMillis(long startNanos) {
         return (System.nanoTime() - startNanos) / 1_000_000;
+    }
+
+    private PaymentProvider resolveProvider(String providerHeader) {
+        if (providerHeader == null || providerHeader.isBlank()) {
+            return PaymentProvider.RAZORPAY;
+        }
+        try {
+            return PaymentProvider.valueOf(providerHeader.trim().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalArgumentException("Unsupported payment provider: " + providerHeader);
+        }
+    }
+
+    private String resolveSignature(PaymentProvider provider, String genericSignature, String razorpaySignature) {
+        if (genericSignature != null && !genericSignature.isBlank()) {
+            return genericSignature;
+        }
+        if (provider == PaymentProvider.RAZORPAY && razorpaySignature != null && !razorpaySignature.isBlank()) {
+            return razorpaySignature;
+        }
+        throw new IllegalArgumentException("Missing payment signature header");
+    }
+
+    private WebhookResponse failureWebhookResponse(String message) {
+        return WebhookResponse.builder()
+                .status(ResponseStatus.FAILURE)
+                .message(message)
+                .build();
+    }
+
+    private PaymentReconcileResponse toReconcileResponse(ReconcilePaymentResult result) {
+        PaymentReconcileResponse response = new PaymentReconcileResponse();
+        response.setPaymentId(result.getPaymentId());
+        response.setPaymentStatus(result.getPaymentStatus());
+        response.setBookingConfirmationTriggered(result.isBookingConfirmationTriggered());
+        response.setRefunded(result.isRefunded());
+        response.setLockReleased(result.isLockReleased());
+        response.setMessage(result.getMessage());
+        response.setStatus(result.isSuccess() ? ResponseStatus.SUCCESS : ResponseStatus.FAILURE);
+        return response;
     }
 }

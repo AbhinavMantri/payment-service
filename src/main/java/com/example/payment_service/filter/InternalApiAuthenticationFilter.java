@@ -13,11 +13,17 @@ import java.io.IOException;
 @Component
 public class InternalApiAuthenticationFilter extends OncePerRequestFilter {
     private static final String INTERNAL_AUTH_HEADER = "X-Internal-Auth";
+    private static final String WEBHOOK_PATH = "/internal/v1/payments/webhook";
 
     private final String sharedSecret;
 
     public InternalApiAuthenticationFilter(@Value("${internal.api.shared-secret}") String sharedSecret) {
         this.sharedSecret = sharedSecret;
+    }
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        return WEBHOOK_PATH.equals(request.getRequestURI());
     }
 
     @Override

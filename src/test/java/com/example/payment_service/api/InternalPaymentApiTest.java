@@ -2,11 +2,11 @@ package com.example.payment_service.api;
 
 import com.example.payment_service.config.PaymentFilterConfig;
 import com.example.payment_service.controller.InternalPaymentController;
-import com.example.payment_service.dto.PaymentReconcileResponse;
 import com.example.payment_service.dto.WebhookResponse;
 import com.example.payment_service.dto.common.ResponseStatus;
 import com.example.payment_service.filter.InternalApiAuthenticationFilter;
 import com.example.payment_service.model.PaymentStatus;
+import com.example.payment_service.service.ReconcilePaymentResult;
 import com.example.payment_service.service.InternalPaymentService;
 import com.example.payment_service.service.JWTService;
 import org.junit.jupiter.api.Test;
@@ -42,40 +42,51 @@ class InternalPaymentApiTest {
     private JWTService jwtService;
 
     @Test
-    void webhookRequestWithoutInternalAuthHeaderIsRejected() throws Exception {
+    void webhookRequestWithoutInternalAuthHeaderIsAllowedWhenSignatureIsPresent() throws Exception {
+        WebhookResponse response = WebhookResponse.builder()
+                .status(ResponseStatus.SUCCESS)
+                .message("Webhook processed successfully")
+                .paymentId(UUID.randomUUID().toString())
+                .paymentStatus("SUCCESS")
+                .build();
+
+        when(internalPaymentService.handleWebhook(any(), any(), any())).thenReturn(response);
+
         mockMvc.perform(post("/internal/v1/payments/webhook")
-                        .header("X-Razorpay-Signature", "signature")
+                        .header("X-Payment-Signature", "signature")
                         .contentType(APPLICATION_JSON)
                         .content(validWebhookBody()))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.status").value("FAILURE"))
-                .andExpect(jsonPath("$.message").value("Missing X-Internal-Auth header"));
-
-        verifyNoInteractions(internalPaymentService);
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCESS"));
     }
 
     @Test
-    void webhookRequestWithInvalidInternalAuthHeaderIsRejected() throws Exception {
+    void webhookRequestWithInvalidInternalAuthHeaderStillUsesWebhookPathWithoutFilterRejection() throws Exception {
+        WebhookResponse response = WebhookResponse.builder()
+                .status(ResponseStatus.SUCCESS)
+                .message("Webhook processed successfully")
+                .paymentId(UUID.randomUUID().toString())
+                .paymentStatus("SUCCESS")
+                .build();
+
+        when(internalPaymentService.handleWebhook(any(), any(), any())).thenReturn(response);
+
         mockMvc.perform(post("/internal/v1/payments/webhook")
                         .header("X-Internal-Auth", "wrong-secret")
-                        .header("X-Razorpay-Signature", "signature")
+                        .header("X-Payment-Signature", "signature")
                         .contentType(APPLICATION_JSON)
                         .content(validWebhookBody()))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.status").value("FAILURE"))
-                .andExpect(jsonPath("$.message").value("Invalid internal auth secret"));
-
-        verifyNoInteractions(internalPaymentService);
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCESS"));
     }
 
     @Test
     void webhookRequestWithInvalidPayloadReturnsBadRequest() throws Exception {
-        when(internalPaymentService.handleWebhook(any(), any()))
+        when(internalPaymentService.handleWebhook(any(), any(), any()))
                 .thenThrow(new IllegalArgumentException("Invalid webhook payload"));
 
         mockMvc.perform(post("/internal/v1/payments/webhook")
-                        .header("X-Internal-Auth", "test-shared-secret")
-                        .header("X-Razorpay-Signature", "signature")
+                        .header("X-Payment-Signature", "signature")
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -94,17 +105,17 @@ class InternalPaymentApiTest {
 
     @Test
     void webhookRequestWithValidPayloadReturnsSuccessBody() throws Exception {
-        WebhookResponse response = new WebhookResponse();
-        response.setStatus(ResponseStatus.SUCCESS);
-        response.setMessage("Webhook processed successfully");
-        response.setPaymentId(UUID.randomUUID().toString());
-        response.setPaymentStatus("SUCCESS");
+        WebhookResponse response = WebhookResponse.builder()
+                .status(ResponseStatus.SUCCESS)
+                .message("Webhook processed successfully")
+                .paymentId(UUID.randomUUID().toString())
+                .paymentStatus("SUCCESS")
+                .build();
 
-        when(internalPaymentService.handleWebhook(any(), any())).thenReturn(response);
+        when(internalPaymentService.handleWebhook(any(), any(), any())).thenReturn(response);
 
         mockMvc.perform(post("/internal/v1/payments/webhook")
-                        .header("X-Internal-Auth", "test-shared-secret")
-                        .header("X-Razorpay-Signature", "signature")
+                        .header("X-Payment-Signature", "signature")
                         .contentType(APPLICATION_JSON)
                         .content(validWebhookBody()))
                 .andExpect(status().isOk())
@@ -113,15 +124,38 @@ class InternalPaymentApiTest {
     }
 
     @Test
+    void webhookRequestWithoutSignatureHeaderReturnsBadRequest() throws Exception {
+        mockMvc.perform(post("/internal/v1/payments/webhook")
+                        .contentType(APPLICATION_JSON)
+                        .content(validWebhookBody()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Missing payment signature header"));
+
+        verifyNoInteractions(internalPaymentService);
+    }
+
+    @Test
+    void reconcileRequestWithoutInternalAuthHeaderIsRejected() throws Exception {
+        mockMvc.perform(post("/internal/v1/payments/{paymentId}/reconcile", UUID.randomUUID()))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.status").value("FAILURE"))
+                .andExpect(jsonPath("$.message").value("Missing X-Internal-Auth header"));
+
+        verifyNoInteractions(internalPaymentService);
+    }
+
+    @Test
     void reconcileRequestReturnsExpectedPayload() throws Exception {
         UUID paymentId = UUID.randomUUID();
-        PaymentReconcileResponse response = new PaymentReconcileResponse();
-        response.setStatus(ResponseStatus.FAILURE);
-        response.setMessage("Booking confirmation failed. Refund triggered and lock released");
-        response.setPaymentId(paymentId);
-        response.setPaymentStatus(PaymentStatus.REFUNDED);
-        response.setRefunded(true);
-        response.setLockReleased(true);
+        ReconcilePaymentResult response = ReconcilePaymentResult.builder()
+                .paymentId(paymentId)
+                .paymentStatus(PaymentStatus.REFUNDED)
+                .success(false)
+                .bookingConfirmationTriggered(true)
+                .refunded(true)
+                .lockReleased(true)
+                .message("Booking confirmation failed. Refund triggered and lock released")
+                .build();
 
         when(internalPaymentService.reconcilePayment(paymentId)).thenReturn(response);
 

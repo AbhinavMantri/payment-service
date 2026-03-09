@@ -1,14 +1,17 @@
 package com.example.payment_service.gateway.razorpay;
 
+import com.example.payment_service.dto.WebhookRequest;
 import com.example.payment_service.dto.PaymentVerificationRequest;
-import com.example.payment_service.gateway.CreatePaymentOrderRequest;
 import com.example.payment_service.gateway.PaymentGateway;
-import com.example.payment_service.gateway.PaymentGatewayOrder;
+import com.example.payment_service.gateway.model.CreatePaymentOrderRequest;
+import com.example.payment_service.gateway.model.PaymentGatewayOrder;
+import com.example.payment_service.gateway.model.PaymentWebhookNotification;
 import com.example.payment_service.gateway.razorpay.model.RazorpayOrderRequest;
 import com.example.payment_service.gateway.razorpay.model.RazorpayOrderResponse;
 import com.example.payment_service.model.PaymentProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import tools.jackson.databind.ObjectMapper;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -20,17 +23,20 @@ public class RazorpayPaymentGateway implements PaymentGateway {
     private static final String HMAC_ALGORITHM = "HmacSHA256";
 
     private final RazorpayApiClient razorpayApiClient;
+    private final ObjectMapper objectMapper;
     private final String keyId;
     private final byte[] keySecret;
     private final byte[] webhookSecret;
 
     public RazorpayPaymentGateway(
             RazorpayApiClient razorpayApiClient,
+            ObjectMapper objectMapper,
             @Value("${payment.razorpay.key-id}") String keyId,
             @Value("${payment.razorpay.key-secret}") String keySecret,
             @Value("${payment.razorpay.webhook-secret}") String webhookSecret
     ) {
         this.razorpayApiClient = razorpayApiClient;
+        this.objectMapper = objectMapper;
         this.keyId = keyId;
         this.keySecret = keySecret.getBytes(StandardCharsets.UTF_8);
         this.webhookSecret = webhookSecret.getBytes(StandardCharsets.UTF_8);
@@ -44,6 +50,25 @@ public class RazorpayPaymentGateway implements PaymentGateway {
     @Override
     public String publicKey() {
         return keyId;
+    }
+
+    @Override
+    public PaymentWebhookNotification parseWebhook(String rawPayload) {
+        try {
+            WebhookRequest request = objectMapper.readValue(rawPayload, WebhookRequest.class);
+            WebhookRequest.Entity entity = request.getPayload().getPayment().getEntity();
+            return PaymentWebhookNotification.builder()
+                    .provider(PaymentProvider.RAZORPAY)
+                    .eventType(request.getEvent())
+                    .providerEventId(buildProviderEventId(request.getEvent(), entity))
+                    .providerPaymentId(entity.getId())
+                    .providerOrderId(entity.getOrderId())
+                    .providerStatus(entity.getStatus())
+                    .notes(entity.getNotes())
+                    .build();
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Invalid webhook payload", ex);
+        }
     }
 
     @Override
@@ -105,5 +130,19 @@ public class RazorpayPaymentGateway implements PaymentGateway {
             result[i / 2] = (byte) ((high << 4) + low);
         }
         return result;
+    }
+
+    private String buildProviderEventId(String eventType, WebhookRequest.Entity entity) {
+        return eventType + ":" + firstNonBlank(entity.getId(), entity.getOrderId(), "unknown") + ":"
+                + firstNonBlank(entity.getStatus(), "unknown");
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 }

@@ -7,8 +7,8 @@ import com.example.payment_service.exceptions.PaymentIdempotencyAlreadyUsedExcep
 import com.example.payment_service.exceptions.PaymentNotFoundException;
 import com.example.payment_service.exceptions.PaymentVerificationFailedException;
 import com.example.payment_service.gateway.PaymentGateway;
-import com.example.payment_service.gateway.PaymentGatewayOrder;
 import com.example.payment_service.gateway.PaymentGatewayRegistry;
+import com.example.payment_service.gateway.model.PaymentGatewayOrder;
 import com.example.payment_service.model.Payment;
 import com.example.payment_service.model.PaymentIdempotency;
 import com.example.payment_service.model.PaymentProvider;

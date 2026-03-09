@@ -1,4 +1,4 @@
-package com.example.payment_service.gateway;
+package com.example.payment_service.gateway.model;
 
 import lombok.Builder;
 import lombok.Value;
