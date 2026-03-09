@@ -10,6 +10,9 @@ import com.example.payment_service.model.PaymentStatus;
 import com.example.payment_service.model.PaymentSummary;
 import com.example.payment_service.repository.PaymentIdempotencyRepository;
 import com.example.payment_service.repository.PaymentRepository;
+
+import lombok.extern.slf4j.Slf4j;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +22,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
+@Slf4j
 public class PaymentService {
     private static final UUID DEFAULT_USER_ID =
             UUID.nameUUIDFromBytes("payment-service-default-user".getBytes(StandardCharsets.UTF_8));
@@ -34,18 +38,37 @@ public class PaymentService {
 
     @Transactional
     public PaymentSummary initiatePayment(String idempotencyKey, InitiatePaymentRequest request) throws PaymentIdempotencyAlreadyUsedException, PaymentNotFoundException {
+        log.info(
+                "payment-initiate service_start idempotencyKey={} eventId={} lockId={} provider={}",
+                idempotencyKey,
+                request.getEventId(),
+                request.getLockId(),
+                request.getProvider()
+        );
         String requestHash = buildRequestHash(request);
         Optional<PaymentIdempotency> existingIdempotency =
                 paymentIdempotencyRepository.findByIdempotencyKey(idempotencyKey);
 
         if (existingIdempotency.isPresent()) {
             PaymentIdempotency paymentIdempotency = existingIdempotency.get();
+            log.info(
+                    "payment-initiate idempotency_hit idempotencyKey={} paymentId={}",
+                    idempotencyKey,
+                    paymentIdempotency.getPaymentId()
+            );
             if (!paymentIdempotency.getRequestHash().equals(requestHash)) {
+                log.warn("payment-initiate idempotency_conflict idempotencyKey={}", idempotencyKey);
                 throw new PaymentIdempotencyAlreadyUsedException("Idempotency key already used for a different request");
             }
 
             Payment existingPayment = paymentRepository.findById(paymentIdempotency.getPaymentId())
                     .orElseThrow(() -> new PaymentNotFoundException("Stored idempotent payment not found"));
+            log.info(
+                    "payment-initiate idempotency_return_existing idempotencyKey={} paymentId={} paymentStatus={}",
+                    idempotencyKey,
+                    existingPayment.getId(),
+                    existingPayment.getStatus()
+            );
             return to(existingPayment);
         }
         //TODO: fetch lock summary from seat allocation service
@@ -58,6 +81,13 @@ public class PaymentService {
         payment.setProvider(request.getProvider());
         payment.setStatus(PaymentStatus.CREATED);
         Payment savedPayment = paymentRepository.save(payment);
+        log.info(
+                "payment-initiate payment_created paymentId={} eventId={} lockId={} paymentStatus={}",
+                savedPayment.getId(),
+                savedPayment.getEventId(),
+                savedPayment.getLockId(),
+                savedPayment.getStatus()
+        );
 
         PaymentIdempotency paymentIdempotency = new PaymentIdempotency();
         paymentIdempotency.setUserId(DEFAULT_USER_ID);
@@ -65,31 +95,55 @@ public class PaymentService {
         paymentIdempotency.setRequestHash(requestHash);
         paymentIdempotency.setPaymentId(savedPayment.getId());
         paymentIdempotencyRepository.save(paymentIdempotency);
+        log.info(
+                "payment-initiate idempotency_saved idempotencyKey={} paymentId={}",
+                idempotencyKey,
+                savedPayment.getId()
+        );
 
         return to(savedPayment);
     }
 
     @Transactional(readOnly = true)
     public PaymentSummary getPaymentStatus(UUID paymentId) {
+        log.info("payment-status service_start paymentId={}", paymentId);
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new PaymentNotFoundException("Payment not found for id: " + paymentId));
+        log.info(
+                "payment-status payment_loaded paymentId={} paymentStatus={} providerOrderId={} providerPaymentId={}",
+                paymentId,
+                payment.getStatus(),
+                payment.getProviderOrderId(),
+                payment.getProviderPaymentId()
+        );
         return to(payment);
     }
 
     @Transactional
     public PaymentCancellation cancelPayment(UUID paymentId) {
+        log.info("payment-cancel service_start paymentId={}", paymentId);
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new PaymentNotFoundException("Payment not found for id: " + paymentId));
+        log.info("payment-cancel payment_loaded paymentId={} paymentStatus={} lockId={}", paymentId, payment.getStatus(), payment.getLockId());
 
         if (payment.getStatus() == PaymentStatus.CREATED || payment.getStatus() == PaymentStatus.PENDING) {
             payment.setStatus(PaymentStatus.CANCELLED);
             payment = paymentRepository.save(payment);
+            log.info("payment-cancel payment_cancelled paymentId={} paymentStatus={}", paymentId, payment.getStatus());
+        } else {
+            log.info("payment-cancel payment_not_cancelled paymentId={} paymentStatus={}", paymentId, payment.getStatus());
         }
 
         PaymentCancellation paymentCancellation = new PaymentCancellation();
         paymentCancellation.setPaymentId(payment.getId());
         paymentCancellation.setStatus(payment.getStatus());
         paymentCancellation.setLockReleased(payment.getStatus() == PaymentStatus.CANCELLED);
+        log.info(
+                "payment-cancel service_end paymentId={} paymentStatus={} lockReleased={}",
+                paymentId,
+                paymentCancellation.getStatus(),
+                paymentCancellation.getLockReleased()
+        );
         // TODO: Integrate with lock service to release the lock if payment is cancelled
         return paymentCancellation;
     }

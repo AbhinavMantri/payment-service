@@ -12,6 +12,9 @@ import com.example.payment_service.model.PaymentStatus;
 import com.example.payment_service.model.ProcessedWebhook;
 import com.example.payment_service.repository.PaymentRepository;
 import com.example.payment_service.repository.ProcessedWebhookRepository;
+
+import lombok.extern.slf4j.Slf4j;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +24,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
+@Slf4j
 public class InternalPaymentService {
     private final PaymentRepository paymentRepository;
     private final ProcessedWebhookRepository processedWebhookRepository;
@@ -41,15 +45,31 @@ public class InternalPaymentService {
 
         PaymentProvider provider = PaymentProvider.RAZORPAY;
         String providerEventId = buildProviderEventId(eventType, entity);
+        log.info(
+                "internal-webhook service_start eventType={} provider={} providerEventId={} providerPaymentId={} providerOrderId={}",
+                eventType,
+                provider,
+                providerEventId,
+                entity.getId(),
+                entity.getOrderId()
+        );
 
         Optional<ProcessedWebhook> existingWebhook =
                 processedWebhookRepository.findByProviderAndProviderEventId(provider.name(), providerEventId);
         if (existingWebhook.isPresent()) {
+            log.warn("internal-webhook duplicate provider={} providerEventId={}", provider, providerEventId);
             throw new DuplicatePaymentFoundException("Duplicate webhook received with providerEventId: " + providerEventId);
         }
 
         Payment payment = resolvePayment(entity)
             .orElseThrow(() -> new PaymentNotFoundException("Payment is not found with "));
+        log.info(
+                "internal-webhook payment_resolved paymentId={} currentStatus={} providerPaymentId={} providerOrderId={}",
+                payment.getId(),
+                payment.getStatus(),
+                payment.getProviderPaymentId(),
+                payment.getProviderOrderId()
+        );
 
         if (entity.getId() != null && !entity.getId().isBlank()) {
             payment.setProviderPaymentId(entity.getId());
@@ -64,11 +84,18 @@ public class InternalPaymentService {
             payment.setFailureReason(null);
         }
         paymentRepository.save(payment);
+        log.info(
+                "internal-webhook payment_updated paymentId={} nextStatus={} bookingConfirmationTriggered={}",
+                payment.getId(),
+                nextStatus,
+                nextStatus == PaymentStatus.SUCCESS || nextStatus == PaymentStatus.SUCCESS_CONFIRMATION_FAILED
+        );
 
         ProcessedWebhook processedWebhook = new ProcessedWebhook();
         processedWebhook.setProvider(provider.name());
         processedWebhook.setProviderEventId(providerEventId);
         processedWebhookRepository.save(processedWebhook);
+        log.info("internal-webhook webhook_recorded provider={} providerEventId={}", provider, providerEventId);
 
         boolean bookingConfirmationTriggered =
                 nextStatus == PaymentStatus.SUCCESS || nextStatus == PaymentStatus.SUCCESS_CONFIRMATION_FAILED;
@@ -88,8 +115,15 @@ public class InternalPaymentService {
 
     @Transactional
     public PaymentReconcileResponse reconcilePayment(UUID paymentId) {
+        log.info("internal-reconcile service_start paymentId={}", paymentId);
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new PaymentNotFoundException("Payment not found for id: " + paymentId));
+        log.info(
+                "internal-reconcile payment_loaded paymentId={} paymentStatus={} lockId={}",
+                paymentId,
+                payment.getStatus(),
+                payment.getLockId()
+        );
 
         PaymentReconcileResponse response = new PaymentReconcileResponse();
         response.setPaymentId(paymentId);
@@ -99,10 +133,16 @@ public class InternalPaymentService {
             response.setStatus(ResponseStatus.FAILURE);
             response.setMessage("Payment is not eligible for reconciliation");
             response.setPaymentStatus(payment.getStatus());
+            log.warn(
+                    "internal-reconcile payment_ineligible paymentId={} paymentStatus={}",
+                    paymentId,
+                    payment.getStatus()
+            );
             return response;
         }
 
         response.setBookingConfirmationTriggered(true);
+        log.info("internal-reconcile booking_confirmation_attempt paymentId={} paymentStatus={}", paymentId, payment.getStatus());
 
         try {
             triggerBookingConfirmation(payment);
@@ -111,8 +151,10 @@ public class InternalPaymentService {
             response.setStatus(ResponseStatus.SUCCESS);
             response.setMessage("Booking confirmation completed successfully");
             response.setPaymentStatus(payment.getStatus());
+            log.info("internal-reconcile booking_confirmation_success paymentId={} paymentStatus={}", paymentId, payment.getStatus());
             return response;
         } catch (RuntimeException ex) {
+            log.warn("internal-reconcile booking_confirmation_failed paymentId={} reason={}", paymentId, ex.getMessage());
             triggerRefund(payment);
             releaseLock(payment);
             payment.setStatus(PaymentStatus.REFUNDED);
@@ -124,6 +166,12 @@ public class InternalPaymentService {
             response.setPaymentStatus(payment.getStatus());
             response.setRefunded(true);
             response.setLockReleased(true);
+            log.warn(
+                    "internal-reconcile refund_completed paymentId={} paymentStatus={} lockReleased={}",
+                    paymentId,
+                    payment.getStatus(),
+                    true
+            );
             return response;
         }
     }
