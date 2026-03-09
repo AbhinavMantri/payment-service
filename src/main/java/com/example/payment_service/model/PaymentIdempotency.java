@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -12,6 +13,7 @@ import java.util.UUID;
 @Entity
 @Table(name = "payment_idempotency")
 @Data
+@EqualsAndHashCode(callSuper = true)
 public class PaymentIdempotency extends BaseEntity {
     @Column(nullable = false)
     private UUID userId;

@@ -1,5 +1,6 @@
 package com.example.payment_service.service;
 
+import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -16,6 +17,7 @@ import java.util.Map;
 @Service
 public class JWTService {
     private static final String HMAC_ALGORITHM = "HmacSHA256";
+    private static final TypeReference<Map<String, Object>> CLAIMS_TYPE = new TypeReference<>() {};
 
     private final byte[] secretKey;
     private final String issuer;
@@ -47,7 +49,7 @@ public class JWTService {
             }
 
             String payloadJson = new String(base64UrlDecode(parts[1]), StandardCharsets.UTF_8);
-            Map<String, Object> claims = objectMapper.readValue(payloadJson, Map.class);
+            Map<String, Object> claims = objectMapper.readValue(payloadJson, CLAIMS_TYPE);
 
             Object issuerClaim = claims.get("iss");
             if (!(issuerClaim instanceof String issuerValue) || !issuer.equals(issuerValue)) {

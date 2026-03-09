@@ -3,10 +3,12 @@ package com.example.payment_service.dto;
 import com.example.payment_service.dto.common.ApiResponse;
 import com.example.payment_service.model.PaymentStatus;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.util.UUID;
 
 @Data
+@EqualsAndHashCode(callSuper = true)
 public class PaymentReconcileResponse extends ApiResponse {
     private UUID paymentId;
     private PaymentStatus paymentStatus;

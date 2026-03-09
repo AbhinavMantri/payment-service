@@ -4,8 +4,10 @@ import com.example.payment_service.dto.common.ApiResponse;
 import com.example.payment_service.model.PaymentProvider;
 
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 @Data
+@EqualsAndHashCode(callSuper = true)
 public class WebhookResponse extends ApiResponse {
     private PaymentProvider provider;
     private String providerEventId;

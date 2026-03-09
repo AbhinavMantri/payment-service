@@ -5,12 +5,14 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.time.Instant;
 
 @Entity
 @Table(name = "processed_webhooks")
 @Data
+@EqualsAndHashCode(callSuper = true)
 public class ProcessedWebhook extends BaseEntity {
     @Column(nullable = false, length = 32)
     private String provider;
