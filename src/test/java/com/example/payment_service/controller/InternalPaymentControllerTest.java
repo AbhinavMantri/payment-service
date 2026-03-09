@@ -5,6 +5,7 @@ import com.example.payment_service.dto.WebhookResponse;
 import com.example.payment_service.dto.common.ResponseStatus;
 import com.example.payment_service.exceptions.DuplicatePaymentFoundException;
 import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
 import com.example.payment_service.service.InternalPaymentService;
 import com.example.payment_service.service.JWTService;
 import org.junit.jupiter.api.Test;
@@ -47,24 +48,26 @@ class InternalPaymentControllerTest {
         response.setPaymentStatus("SUCCESS");
         response.setBookingConfirmationTriggered(true);
 
-        when(internalPaymentService.handleWebhook(any())).thenReturn(response);
+        when(internalPaymentService.handleWebhook(any(), any())).thenReturn(response);
 
-        mockMvc.perform(post("/internal/payments/webhook")
+        mockMvc.perform(post("/internal/v1/payments/webhook")
+                        .header("X-Razorpay-Signature", "signature")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(validWebhookBody()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("SUCCESS"))
                 .andExpect(jsonPath("$.paymentStatus").value("SUCCESS"));
 
-        verify(internalPaymentService, times(1)).handleWebhook(any());
+        verify(internalPaymentService, times(1)).handleWebhook(any(), any());
     }
 
     @Test
     void handleWebhookReturnsBadRequestWhenPaymentIsMissing() throws Exception {
-        when(internalPaymentService.handleWebhook(any()))
+        when(internalPaymentService.handleWebhook(any(), any()))
                 .thenThrow(new PaymentNotFoundException("missing payment"));
 
-        mockMvc.perform(post("/internal/payments/webhook")
+        mockMvc.perform(post("/internal/v1/payments/webhook")
+                        .header("X-Razorpay-Signature", "signature")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(validWebhookBody()))
                 .andExpect(status().isBadRequest())
@@ -74,15 +77,30 @@ class InternalPaymentControllerTest {
 
     @Test
     void handleWebhookReturnsConflictWhenWebhookIsDuplicate() throws Exception {
-        when(internalPaymentService.handleWebhook(any()))
+        when(internalPaymentService.handleWebhook(any(), any()))
                 .thenThrow(new DuplicatePaymentFoundException("duplicate webhook"));
 
-        mockMvc.perform(post("/internal/payments/webhook")
+        mockMvc.perform(post("/internal/v1/payments/webhook")
+                        .header("X-Razorpay-Signature", "signature")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(validWebhookBody()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.status").value("FAILURE"))
                 .andExpect(jsonPath("$.message").value("duplicate webhook"));
+    }
+
+    @Test
+    void handleWebhookReturnsUnauthorizedWhenSignatureIsInvalid() throws Exception {
+        when(internalPaymentService.handleWebhook(any(), any()))
+                .thenThrow(new PaymentVerificationFailedException("Invalid webhook signature"));
+
+        mockMvc.perform(post("/internal/v1/payments/webhook")
+                        .header("X-Razorpay-Signature", "bad-signature")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validWebhookBody()))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.status").value("FAILURE"))
+                .andExpect(jsonPath("$.message").value("Invalid webhook signature"));
     }
 
     @Test
@@ -96,7 +114,7 @@ class InternalPaymentControllerTest {
 
         when(internalPaymentService.reconcilePayment(paymentId)).thenReturn(response);
 
-        mockMvc.perform(post("/internal/payments/{paymentId}/reconcile", paymentId))
+        mockMvc.perform(post("/internal/v1/payments/{paymentId}/reconcile", paymentId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("SUCCESS"))
                 .andExpect(jsonPath("$.paymentId").value(paymentId.toString()));
@@ -108,7 +126,7 @@ class InternalPaymentControllerTest {
         when(internalPaymentService.reconcilePayment(paymentId))
                 .thenThrow(new PaymentNotFoundException("missing reconcile payment"));
 
-        mockMvc.perform(post("/internal/payments/{paymentId}/reconcile", paymentId))
+        mockMvc.perform(post("/internal/v1/payments/{paymentId}/reconcile", paymentId))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value("FAILURE"))
                 .andExpect(jsonPath("$.message").value("missing reconcile payment"));

@@ -1,13 +1,12 @@
 package com.example.payment_service.controller;
 
 import com.example.payment_service.dto.PaymentReconcileResponse;
-import com.example.payment_service.dto.WebhookRequest;
 import com.example.payment_service.dto.WebhookResponse;
 import com.example.payment_service.dto.common.ResponseStatus;
 import com.example.payment_service.exceptions.DuplicatePaymentFoundException;
 import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
 import com.example.payment_service.service.InternalPaymentService;
-import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,13 +15,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/internal/payments")
+@RequestMapping("/internal/v1/payments")
 @Slf4j
 public class InternalPaymentController {
     private final InternalPaymentService internalPaymentService;
@@ -33,23 +33,20 @@ public class InternalPaymentController {
     }
 
     @PostMapping("/webhook")
-    public ResponseEntity<WebhookResponse> handleWebhook(@RequestBody @Valid WebhookRequest request) {
+    public ResponseEntity<WebhookResponse> handleWebhook(
+            @RequestBody String rawPayload,
+            @RequestHeader("X-Razorpay-Signature") String signature
+    ) {
         long startNanos = System.nanoTime();
-        String eventType = request.getEvent();
-        String externalPaymentId = request.getPayload() == null
-                || request.getPayload().getPayment() == null
-                || request.getPayload().getPayment().getEntity() == null
-                ? null
-                : request.getPayload().getPayment().getEntity().getId();
-        log.info("internal-webhook request_start eventType={} providerPaymentId={}", eventType, externalPaymentId);
+        log.info("internal-webhook request_start signaturePresent={}", signature != null && !signature.isBlank());
 
         WebhookResponse response = new WebhookResponse();
         try {
-            response = internalPaymentService.handleWebhook(request);
+            response = internalPaymentService.handleWebhook(rawPayload, signature);
             log.info(
                     "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={}",
-                    eventType,
-                    externalPaymentId,
+                    response.getEventType(),
+                    response.getEventId(),
                     response.getStatus(),
                     HttpStatus.OK.value(),
                     toLatencyMillis(startNanos)
@@ -60,8 +57,8 @@ public class InternalPaymentController {
             response.setMessage(ex.getMessage());
             log.warn(
                     "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={} reason={}",
-                    eventType,
-                    externalPaymentId,
+                    null,
+                    null,
                     response.getStatus(),
                     HttpStatus.BAD_REQUEST.value(),
                     toLatencyMillis(startNanos),
@@ -73,14 +70,40 @@ public class InternalPaymentController {
             response.setMessage(ex.getMessage());
             log.warn(
                     "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={} reason={}",
-                    eventType,
-                    externalPaymentId,
+                    null,
+                    null,
                     response.getStatus(),
                     HttpStatus.CONFLICT.value(),
                     toLatencyMillis(startNanos),
                     ex.getMessage()
             );
             return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+        } catch (IllegalArgumentException ex) {
+            response.setStatus(ResponseStatus.FAILURE);
+            response.setMessage(ex.getMessage());
+            log.warn(
+                    "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={} reason={}",
+                    null,
+                    null,
+                    response.getStatus(),
+                    HttpStatus.BAD_REQUEST.value(),
+                    toLatencyMillis(startNanos),
+                    ex.getMessage()
+            );
+            return ResponseEntity.badRequest().body(response);
+        } catch (PaymentVerificationFailedException ex) {
+            response.setStatus(ResponseStatus.FAILURE);
+            response.setMessage(ex.getMessage());
+            log.warn(
+                    "internal-webhook request_end eventType={} providerPaymentId={} status={} httpStatus={} latencyMs={} reason={}",
+                    null,
+                    null,
+                    response.getStatus(),
+                    HttpStatus.UNAUTHORIZED.value(),
+                    toLatencyMillis(startNanos),
+                    ex.getMessage()
+            );
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
         }
     }
 

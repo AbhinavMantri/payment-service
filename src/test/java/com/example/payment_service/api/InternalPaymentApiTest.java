@@ -43,7 +43,8 @@ class InternalPaymentApiTest {
 
     @Test
     void webhookRequestWithoutInternalAuthHeaderIsRejected() throws Exception {
-        mockMvc.perform(post("/internal/payments/webhook")
+        mockMvc.perform(post("/internal/v1/payments/webhook")
+                        .header("X-Razorpay-Signature", "signature")
                         .contentType(APPLICATION_JSON)
                         .content(validWebhookBody()))
                 .andExpect(status().isUnauthorized())
@@ -55,8 +56,9 @@ class InternalPaymentApiTest {
 
     @Test
     void webhookRequestWithInvalidInternalAuthHeaderIsRejected() throws Exception {
-        mockMvc.perform(post("/internal/payments/webhook")
+        mockMvc.perform(post("/internal/v1/payments/webhook")
                         .header("X-Internal-Auth", "wrong-secret")
+                        .header("X-Razorpay-Signature", "signature")
                         .contentType(APPLICATION_JSON)
                         .content(validWebhookBody()))
                 .andExpect(status().isUnauthorized())
@@ -68,8 +70,12 @@ class InternalPaymentApiTest {
 
     @Test
     void webhookRequestWithInvalidPayloadReturnsBadRequest() throws Exception {
-        mockMvc.perform(post("/internal/payments/webhook")
+        when(internalPaymentService.handleWebhook(any(), any()))
+                .thenThrow(new IllegalArgumentException("Invalid webhook payload"));
+
+        mockMvc.perform(post("/internal/v1/payments/webhook")
                         .header("X-Internal-Auth", "test-shared-secret")
+                        .header("X-Razorpay-Signature", "signature")
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -94,10 +100,11 @@ class InternalPaymentApiTest {
         response.setPaymentId(UUID.randomUUID().toString());
         response.setPaymentStatus("SUCCESS");
 
-        when(internalPaymentService.handleWebhook(any())).thenReturn(response);
+        when(internalPaymentService.handleWebhook(any(), any())).thenReturn(response);
 
-        mockMvc.perform(post("/internal/payments/webhook")
+        mockMvc.perform(post("/internal/v1/payments/webhook")
                         .header("X-Internal-Auth", "test-shared-secret")
+                        .header("X-Razorpay-Signature", "signature")
                         .contentType(APPLICATION_JSON)
                         .content(validWebhookBody()))
                 .andExpect(status().isOk())
@@ -118,7 +125,7 @@ class InternalPaymentApiTest {
 
         when(internalPaymentService.reconcilePayment(paymentId)).thenReturn(response);
 
-        mockMvc.perform(post("/internal/payments/{paymentId}/reconcile", paymentId)
+        mockMvc.perform(post("/internal/v1/payments/{paymentId}/reconcile", paymentId)
                         .header("X-Internal-Auth", "test-shared-secret"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.paymentId").value(paymentId.toString()))

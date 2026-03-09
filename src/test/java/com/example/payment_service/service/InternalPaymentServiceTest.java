@@ -5,19 +5,21 @@ import com.example.payment_service.dto.WebhookRequest;
 import com.example.payment_service.dto.WebhookResponse;
 import com.example.payment_service.exceptions.DuplicatePaymentFoundException;
 import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
+import com.example.payment_service.gateway.PaymentGateway;
+import com.example.payment_service.gateway.PaymentGatewayRegistry;
 import com.example.payment_service.model.Payment;
 import com.example.payment_service.model.PaymentProvider;
 import com.example.payment_service.model.PaymentStatus;
 import com.example.payment_service.model.ProcessedWebhook;
 import com.example.payment_service.repository.PaymentRepository;
 import com.example.payment_service.repository.ProcessedWebhookRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -39,14 +41,30 @@ class InternalPaymentServiceTest {
     @Mock
     private ProcessedWebhookRepository processedWebhookRepository;
 
-    @InjectMocks
+    @Mock
+    private PaymentGatewayRegistry paymentGatewayRegistry;
+
+    @Mock
+    private PaymentGateway paymentGateway;
+
     private InternalPaymentService internalPaymentService;
+
+    @BeforeEach
+    void setUp() {
+        internalPaymentService = new InternalPaymentService(
+                paymentRepository,
+                processedWebhookRepository,
+                paymentGatewayRegistry,
+                new tools.jackson.databind.ObjectMapper()
+        );
+    }
 
     @Test
     void handleWebhookMarksPaymentSuccessfulAndRecordsWebhook() {
         UUID paymentId = UUID.randomUUID();
-        WebhookRequest request = buildWebhookRequest(paymentId, "payment.captured", "captured");
         Payment payment = buildPayment(paymentId, PaymentStatus.PENDING);
+        when(paymentGatewayRegistry.get(PaymentProvider.RAZORPAY)).thenReturn(paymentGateway);
+        when(paymentGateway.verifyWebhookSignature(any(), any())).thenReturn(true);
 
         when(processedWebhookRepository.findByProviderAndProviderEventId("RAZORPAY", "payment.captured:pay_123:captured"))
                 .thenReturn(Optional.empty());
@@ -54,7 +72,7 @@ class InternalPaymentServiceTest {
         when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(processedWebhookRepository.save(any(ProcessedWebhook.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        WebhookResponse response = internalPaymentService.handleWebhook(request);
+        WebhookResponse response = internalPaymentService.handleWebhook(validWebhookBody(paymentId), "signature");
 
         assertEquals("SUCCESS", response.getStatus().name());
         assertEquals(paymentId.toString(), response.getPaymentId());
@@ -66,13 +84,23 @@ class InternalPaymentServiceTest {
 
     @Test
     void handleWebhookRejectsDuplicateWebhook() {
-        WebhookRequest request = buildWebhookRequest(UUID.randomUUID(), "payment.captured", "captured");
+        when(paymentGatewayRegistry.get(PaymentProvider.RAZORPAY)).thenReturn(paymentGateway);
+        when(paymentGateway.verifyWebhookSignature(any(), any())).thenReturn(true);
 
         when(processedWebhookRepository.findByProviderAndProviderEventId("RAZORPAY", "payment.captured:pay_123:captured"))
                 .thenReturn(Optional.of(new ProcessedWebhook()));
 
-        assertThrows(DuplicatePaymentFoundException.class, () -> internalPaymentService.handleWebhook(request));
+        assertThrows(DuplicatePaymentFoundException.class, () -> internalPaymentService.handleWebhook(validWebhookBody(UUID.randomUUID()), "signature"));
         verify(paymentRepository, never()).save(any(Payment.class));
+    }
+
+    @Test
+    void handleWebhookRejectsInvalidSignature() {
+        when(paymentGatewayRegistry.get(PaymentProvider.RAZORPAY)).thenReturn(paymentGateway);
+        when(paymentGateway.verifyWebhookSignature(any(), any())).thenReturn(false);
+
+        assertThrows(PaymentVerificationFailedException.class,
+                () -> internalPaymentService.handleWebhook(validWebhookBody(UUID.randomUUID()), "bad-signature"));
     }
 
     @Test
@@ -130,24 +158,24 @@ class InternalPaymentServiceTest {
         assertThrows(PaymentNotFoundException.class, () -> internalPaymentService.reconcilePayment(paymentId));
     }
 
-    private WebhookRequest buildWebhookRequest(UUID paymentId, String event, String status) {
-        WebhookRequest request = new WebhookRequest();
-        request.setEvent(event);
-
-        WebhookRequest.Entity entity = new WebhookRequest.Entity();
-        entity.setId("pay_123");
-        entity.setOrderId("order_123");
-        entity.setStatus(status);
-        entity.setNotes(Map.of("paymentId", paymentId.toString()));
-
-        WebhookRequest.Payment payment = new WebhookRequest.Payment();
-        payment.setEntity(entity);
-
-        WebhookRequest.Payload payload = new WebhookRequest.Payload();
-        payload.setPayment(payment);
-
-        request.setPayload(payload);
-        return request;
+    private String validWebhookBody(UUID paymentId) {
+        return """
+                {
+                  "event": "payment.captured",
+                  "payload": {
+                    "payment": {
+                      "entity": {
+                        "id": "pay_123",
+                        "order_id": "order_123",
+                        "status": "captured",
+                        "notes": {
+                          "paymentId": "%s"
+                        }
+                      }
+                    }
+                  }
+                }
+                """.formatted(paymentId);
     }
 
     private Payment buildPayment(UUID paymentId, PaymentStatus status) {

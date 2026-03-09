@@ -2,8 +2,14 @@ package com.example.payment_service.service;
 
 import com.example.payment_service.dto.InitiatePaymentRequest;
 import com.example.payment_service.dto.PaymentCancellation;
+import com.example.payment_service.dto.PaymentVerificationRequest;
 import com.example.payment_service.exceptions.PaymentIdempotencyAlreadyUsedException;
 import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
+import com.example.payment_service.gateway.CreatePaymentOrderRequest;
+import com.example.payment_service.gateway.PaymentGateway;
+import com.example.payment_service.gateway.PaymentGatewayOrder;
+import com.example.payment_service.gateway.PaymentGatewayRegistry;
 import com.example.payment_service.model.Payment;
 import com.example.payment_service.model.PaymentIdempotency;
 import com.example.payment_service.model.PaymentStatus;
@@ -18,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -29,11 +36,17 @@ public class PaymentService {
 
     private final PaymentIdempotencyRepository paymentIdempotencyRepository;
     private final PaymentRepository paymentRepository;
+    private final PaymentGatewayRegistry paymentGatewayRegistry;
 
     @Autowired
-    public PaymentService(PaymentIdempotencyRepository paymentIdempotencyRepository, PaymentRepository paymentRepository) {
+    public PaymentService(
+            PaymentIdempotencyRepository paymentIdempotencyRepository,
+            PaymentRepository paymentRepository,
+            PaymentGatewayRegistry paymentGatewayRegistry
+    ) {
         this.paymentIdempotencyRepository = paymentIdempotencyRepository;
         this.paymentRepository = paymentRepository;
+        this.paymentGatewayRegistry = paymentGatewayRegistry;
     }
 
     @Transactional
@@ -89,6 +102,25 @@ public class PaymentService {
                 savedPayment.getStatus()
         );
 
+        PaymentGateway paymentGateway = paymentGatewayRegistry.get(savedPayment.getProvider());
+        PaymentGatewayOrder gatewayOrder = paymentGateway.createOrder(CreatePaymentOrderRequest.builder()
+                .paymentId(savedPayment.getId())
+                .amountMinor(savedPayment.getAmountMinor())
+                .currency(savedPayment.getCurrency())
+                .provider(savedPayment.getProvider())
+                .notes(Map.of("paymentId", savedPayment.getId().toString()))
+                .build());
+        savedPayment.setProviderOrderId(gatewayOrder.getOrderId());
+        savedPayment.setStatus(PaymentStatus.PENDING);
+        savedPayment = paymentRepository.save(savedPayment);
+        log.info(
+                "payment-initiate provider_order_created paymentId={} provider={} providerOrderId={} paymentStatus={}",
+                savedPayment.getId(),
+                savedPayment.getProvider(),
+                savedPayment.getProviderOrderId(),
+                savedPayment.getStatus()
+        );
+
         PaymentIdempotency paymentIdempotency = new PaymentIdempotency();
         paymentIdempotency.setUserId(DEFAULT_USER_ID);
         paymentIdempotency.setIdempotencyKey(idempotencyKey);
@@ -102,6 +134,38 @@ public class PaymentService {
         );
 
         return to(savedPayment);
+    }
+
+    @Transactional
+    public PaymentSummary verifyPayment(UUID paymentId, PaymentVerificationRequest request) {
+        log.info(
+                "payment-verify service_start paymentId={} providerOrderId={} providerPaymentId={}",
+                paymentId,
+                request.getProviderOrderId(),
+                request.getProviderPaymentId()
+        );
+        Payment payment = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new PaymentNotFoundException("Payment not found for id: " + paymentId));
+
+        if (payment.getProviderOrderId() == null || !payment.getProviderOrderId().equals(request.getProviderOrderId())) {
+            throw new PaymentVerificationFailedException("Provider order ID does not match payment");
+        }
+
+        PaymentGateway paymentGateway = paymentGatewayRegistry.get(payment.getProvider());
+        if (!paymentGateway.verifyPaymentSignature(request)) {
+            throw new PaymentVerificationFailedException("Provider payment signature verification failed");
+        }
+
+        payment.setProviderPaymentId(request.getProviderPaymentId());
+        payment.setStatus(PaymentStatus.PENDING);
+        payment = paymentRepository.save(payment);
+        log.info(
+                "payment-verify service_end paymentId={} paymentStatus={} providerPaymentId={}",
+                paymentId,
+                payment.getStatus(),
+                payment.getProviderPaymentId()
+        );
+        return to(payment);
     }
 
     @Transactional(readOnly = true)
@@ -160,6 +224,7 @@ public class PaymentService {
         paymentSummary.setAmountMinor(payment.getAmountMinor());
         paymentSummary.setCurrency(payment.getCurrency());
         paymentSummary.setStatus(payment.getStatus());
+        paymentSummary.setProviderKeyId(paymentGatewayRegistry.get(payment.getProvider()).publicKey());
         paymentSummary.setProviderOrderId(payment.getProviderOrderId());
         paymentSummary.setProviderPaymentId(payment.getProviderPaymentId());
 

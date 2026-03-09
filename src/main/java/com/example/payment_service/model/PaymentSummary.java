@@ -12,6 +12,7 @@ public class PaymentSummary {
     private Long amountMinor;
     private String currency;
     private PaymentStatus status;
+    private String providerKeyId;
     private String providerOrderId;
     private String providerPaymentId;
 }

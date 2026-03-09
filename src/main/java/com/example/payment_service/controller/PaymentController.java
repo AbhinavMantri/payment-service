@@ -4,9 +4,12 @@ import com.example.payment_service.dto.InitiatePaymentRequest;
 import com.example.payment_service.dto.PaymentCancellation;
 import com.example.payment_service.dto.PaymentCancelResponse;
 import com.example.payment_service.dto.PaymentSummaryResponse;
+import com.example.payment_service.dto.PaymentVerificationRequest;
+import com.example.payment_service.dto.PaymentVerificationResponse;
 import com.example.payment_service.dto.common.ResponseStatus;
 import com.example.payment_service.exceptions.PaymentIdempotencyAlreadyUsedException;
 import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
 import com.example.payment_service.model.PaymentSummary;
 import com.example.payment_service.service.PaymentService;
 
@@ -166,6 +169,61 @@ public class PaymentController {
                     ex.getMessage()
             );
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+        }
+    }
+
+    @PostMapping("/{paymentId}/verify")
+    public ResponseEntity<PaymentVerificationResponse> verifyPayment(
+            @PathVariable UUID paymentId,
+            @RequestBody @Valid PaymentVerificationRequest request
+    ) {
+        long startNanos = System.nanoTime();
+        log.info(
+                "payment-verify request_start paymentId={} providerOrderId={} providerPaymentId={}",
+                paymentId,
+                request.getProviderOrderId(),
+                request.getProviderPaymentId()
+        );
+        PaymentVerificationResponse response = new PaymentVerificationResponse();
+
+        try {
+            PaymentSummary paymentSummary = paymentService.verifyPayment(paymentId, request);
+            response.setStatus(ResponseStatus.SUCCESS);
+            response.setPayment(paymentSummary);
+            response.setMessage("Payment verification accepted");
+            log.info(
+                    "payment-verify request_end paymentId={} status={} paymentStatus={} httpStatus={} latencyMs={}",
+                    paymentId,
+                    response.getStatus(),
+                    paymentSummary.getStatus(),
+                    HttpStatus.OK.value(),
+                    toLatencyMillis(startNanos)
+            );
+            return ResponseEntity.ok(response);
+        } catch (PaymentNotFoundException ex) {
+            response.setStatus(ResponseStatus.FAILURE);
+            response.setMessage(ex.getMessage());
+            log.warn(
+                    "payment-verify request_end paymentId={} status={} httpStatus={} latencyMs={} reason={}",
+                    paymentId,
+                    response.getStatus(),
+                    HttpStatus.NOT_FOUND.value(),
+                    toLatencyMillis(startNanos),
+                    ex.getMessage()
+            );
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+        } catch (PaymentVerificationFailedException ex) {
+            response.setStatus(ResponseStatus.FAILURE);
+            response.setMessage(ex.getMessage());
+            log.warn(
+                    "payment-verify request_end paymentId={} status={} httpStatus={} latencyMs={} reason={}",
+                    paymentId,
+                    response.getStatus(),
+                    HttpStatus.BAD_REQUEST.value(),
+                    toLatencyMillis(startNanos),
+                    ex.getMessage()
+            );
+            return ResponseEntity.badRequest().body(response);
         }
     }
 

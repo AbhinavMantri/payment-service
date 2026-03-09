@@ -2,8 +2,13 @@ package com.example.payment_service.service;
 
 import com.example.payment_service.dto.InitiatePaymentRequest;
 import com.example.payment_service.dto.PaymentCancellation;
+import com.example.payment_service.dto.PaymentVerificationRequest;
 import com.example.payment_service.exceptions.PaymentIdempotencyAlreadyUsedException;
 import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
+import com.example.payment_service.gateway.PaymentGateway;
+import com.example.payment_service.gateway.PaymentGatewayOrder;
+import com.example.payment_service.gateway.PaymentGatewayRegistry;
 import com.example.payment_service.model.Payment;
 import com.example.payment_service.model.PaymentIdempotency;
 import com.example.payment_service.model.PaymentProvider;
@@ -38,22 +43,39 @@ class PaymentServiceTest {
     @Mock
     private PaymentRepository paymentRepository;
 
+    @Mock
+    private PaymentGatewayRegistry paymentGatewayRegistry;
+
+    @Mock
+    private PaymentGateway paymentGateway;
+
     @InjectMocks
     private PaymentService paymentService;
 
     @Test
     void initiatePaymentCreatesNewPaymentAndStoresIdempotency() {
         InitiatePaymentRequest request = buildRequest();
-        Payment savedPayment = buildPayment(UUID.randomUUID(), PaymentStatus.CREATED);
+        Payment createdPayment = buildPayment(UUID.randomUUID(), PaymentStatus.CREATED);
+        Payment savedPayment = buildPayment(createdPayment.getId(), PaymentStatus.PENDING);
+        savedPayment.setProviderOrderId("order_123");
 
         when(paymentIdempotencyRepository.findByIdempotencyKey("idem-1")).thenReturn(Optional.empty());
-        when(paymentRepository.save(any(Payment.class))).thenReturn(savedPayment);
+        when(paymentGatewayRegistry.get(PaymentProvider.RAZORPAY)).thenReturn(paymentGateway);
+        when(paymentGateway.createOrder(any())).thenReturn(PaymentGatewayOrder.builder()
+                .orderId("order_123")
+                .publicKey("rzp_test_123")
+                .amountMinor(createdPayment.getAmountMinor())
+                .currency(createdPayment.getCurrency())
+                .build());
+        when(paymentGateway.publicKey()).thenReturn("rzp_test_123");
+        when(paymentRepository.save(any(Payment.class))).thenReturn(createdPayment, savedPayment);
 
         PaymentSummary result = paymentService.initiatePayment("idem-1", request);
 
         assertEquals(savedPayment.getId(), result.getPaymentId());
-        assertEquals(PaymentStatus.CREATED, result.getStatus());
-        verify(paymentRepository).save(any(Payment.class));
+        assertEquals(PaymentStatus.PENDING, result.getStatus());
+        assertEquals("order_123", result.getProviderOrderId());
+        verify(paymentRepository, org.mockito.Mockito.times(2)).save(any(Payment.class));
         verify(paymentIdempotencyRepository).save(any(PaymentIdempotency.class));
     }
 
@@ -66,6 +88,8 @@ class PaymentServiceTest {
         idempotency.setRequestHash(request.getEventId() + ":" + request.getLockId() + ":" + request.getProvider());
 
         Payment existingPayment = buildPayment(paymentId, PaymentStatus.SUCCESS);
+        when(paymentGatewayRegistry.get(PaymentProvider.RAZORPAY)).thenReturn(paymentGateway);
+        when(paymentGateway.publicKey()).thenReturn("rzp_test_123");
 
         when(paymentIdempotencyRepository.findByIdempotencyKey("idem-1")).thenReturn(Optional.of(idempotency));
         when(paymentRepository.findById(paymentId)).thenReturn(Optional.of(existingPayment));
@@ -123,6 +147,45 @@ class PaymentServiceTest {
         assertEquals(PaymentStatus.SUCCESS, result.getStatus());
         assertFalse(result.getLockReleased());
         verify(paymentRepository, never()).save(any(Payment.class));
+    }
+
+    @Test
+    void verifyPaymentUpdatesProviderPaymentIdWhenSignatureIsValid() {
+        UUID paymentId = UUID.randomUUID();
+        Payment payment = buildPayment(paymentId, PaymentStatus.PENDING);
+        payment.setProviderOrderId("order_123");
+        PaymentVerificationRequest request = new PaymentVerificationRequest();
+        request.setProviderOrderId("order_123");
+        request.setProviderPaymentId("pay_123");
+        request.setProviderSignature("signature_123");
+
+        when(paymentRepository.findById(paymentId)).thenReturn(Optional.of(payment));
+        when(paymentGatewayRegistry.get(PaymentProvider.RAZORPAY)).thenReturn(paymentGateway);
+        when(paymentGateway.verifyPaymentSignature(request)).thenReturn(true);
+        when(paymentGateway.publicKey()).thenReturn("rzp_test_123");
+        when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        PaymentSummary result = paymentService.verifyPayment(paymentId, request);
+
+        assertEquals("pay_123", result.getProviderPaymentId());
+        assertEquals(PaymentStatus.PENDING, result.getStatus());
+    }
+
+    @Test
+    void verifyPaymentThrowsWhenSignatureIsInvalid() {
+        UUID paymentId = UUID.randomUUID();
+        Payment payment = buildPayment(paymentId, PaymentStatus.PENDING);
+        payment.setProviderOrderId("order_123");
+        PaymentVerificationRequest request = new PaymentVerificationRequest();
+        request.setProviderOrderId("order_123");
+        request.setProviderPaymentId("pay_123");
+        request.setProviderSignature("bad");
+
+        when(paymentRepository.findById(paymentId)).thenReturn(Optional.of(payment));
+        when(paymentGatewayRegistry.get(PaymentProvider.RAZORPAY)).thenReturn(paymentGateway);
+        when(paymentGateway.verifyPaymentSignature(request)).thenReturn(false);
+
+        assertThrows(PaymentVerificationFailedException.class, () -> paymentService.verifyPayment(paymentId, request));
     }
 
     private InitiatePaymentRequest buildRequest() {

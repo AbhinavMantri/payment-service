@@ -6,6 +6,9 @@ import com.example.payment_service.dto.WebhookResponse;
 import com.example.payment_service.dto.common.ResponseStatus;
 import com.example.payment_service.exceptions.DuplicatePaymentFoundException;
 import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
+import com.example.payment_service.gateway.PaymentGateway;
+import com.example.payment_service.gateway.PaymentGatewayRegistry;
 import com.example.payment_service.model.Payment;
 import com.example.payment_service.model.PaymentProvider;
 import com.example.payment_service.model.PaymentStatus;
@@ -18,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.Locale;
 import java.util.Optional;
@@ -28,22 +32,33 @@ import java.util.UUID;
 public class InternalPaymentService {
     private final PaymentRepository paymentRepository;
     private final ProcessedWebhookRepository processedWebhookRepository;
+    private final PaymentGatewayRegistry paymentGatewayRegistry;
+    private final ObjectMapper objectMapper;
 
     @Autowired
     public InternalPaymentService(
             PaymentRepository paymentRepository,
-            ProcessedWebhookRepository processedWebhookRepository
+            ProcessedWebhookRepository processedWebhookRepository,
+            PaymentGatewayRegistry paymentGatewayRegistry,
+            ObjectMapper objectMapper
     ) {
         this.paymentRepository = paymentRepository;
         this.processedWebhookRepository = processedWebhookRepository;
+        this.paymentGatewayRegistry = paymentGatewayRegistry;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional
-    public WebhookResponse handleWebhook(WebhookRequest request) throws PaymentNotFoundException, DuplicatePaymentFoundException {
+    public WebhookResponse handleWebhook(String rawPayload, String signature) throws PaymentNotFoundException, DuplicatePaymentFoundException {
+        PaymentProvider provider = PaymentProvider.RAZORPAY;
+        PaymentGateway paymentGateway = paymentGatewayRegistry.get(provider);
+        if (!paymentGateway.verifyWebhookSignature(rawPayload, signature)) {
+            throw new PaymentVerificationFailedException("Invalid webhook signature");
+        }
+
+        WebhookRequest request = parseWebhookRequest(rawPayload);
         WebhookRequest.Entity entity = extractEntity(request);
         String eventType = request.getEvent();
-
-        PaymentProvider provider = PaymentProvider.RAZORPAY;
         String providerEventId = buildProviderEventId(eventType, entity);
         log.info(
                 "internal-webhook service_start eventType={} provider={} providerEventId={} providerPaymentId={} providerOrderId={}",
@@ -111,6 +126,14 @@ public class InternalPaymentService {
                 false,
                 bookingConfirmationTriggered
         );
+    }
+
+    private WebhookRequest parseWebhookRequest(String rawPayload) {
+        try {
+            return objectMapper.readValue(rawPayload, WebhookRequest.class);
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Invalid webhook payload", ex);
+        }
     }
 
     @Transactional

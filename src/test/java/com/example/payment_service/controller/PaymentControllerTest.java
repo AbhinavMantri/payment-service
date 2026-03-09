@@ -1,8 +1,10 @@
 package com.example.payment_service.controller;
 
 import com.example.payment_service.dto.PaymentCancellation;
+import com.example.payment_service.dto.PaymentVerificationRequest;
 import com.example.payment_service.exceptions.PaymentIdempotencyAlreadyUsedException;
 import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
 import com.example.payment_service.model.PaymentProvider;
 import com.example.payment_service.model.PaymentStatus;
 import com.example.payment_service.model.PaymentSummary;
@@ -108,6 +110,50 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.paymentCancellation.paymentId").value(paymentId.toString()))
                 .andExpect(jsonPath("$.paymentCancellation.status").value("CANCELLED"))
                 .andExpect(jsonPath("$.paymentCancellation.lockReleased").value(true));
+    }
+
+    @Test
+    void verifyPaymentReturnsOkResponse() throws Exception {
+        UUID paymentId = UUID.randomUUID();
+        PaymentSummary paymentSummary = buildPaymentSummary(paymentId, PaymentStatus.PENDING);
+        paymentSummary.setProviderOrderId("order_123");
+        paymentSummary.setProviderPaymentId("pay_123");
+        paymentSummary.setProviderKeyId("rzp_test_123");
+
+        when(paymentService.verifyPayment(eq(paymentId), any(PaymentVerificationRequest.class))).thenReturn(paymentSummary);
+
+        mockMvc.perform(post("/payments/{paymentId}/verify", paymentId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "providerOrderId": "order_123",
+                                  "providerPaymentId": "pay_123",
+                                  "providerSignature": "signature_123"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCESS"))
+                .andExpect(jsonPath("$.payment.providerPaymentId").value("pay_123"));
+    }
+
+    @Test
+    void verifyPaymentReturnsBadRequestForInvalidSignature() throws Exception {
+        UUID paymentId = UUID.randomUUID();
+        when(paymentService.verifyPayment(eq(paymentId), any(PaymentVerificationRequest.class)))
+                .thenThrow(new PaymentVerificationFailedException("invalid signature"));
+
+        mockMvc.perform(post("/payments/{paymentId}/verify", paymentId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "providerOrderId": "order_123",
+                                  "providerPaymentId": "pay_123",
+                                  "providerSignature": "signature_123"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value("FAILURE"))
+                .andExpect(jsonPath("$.message").value("invalid signature"));
     }
 
     private PaymentSummary buildPaymentSummary(UUID paymentId, PaymentStatus status) {
