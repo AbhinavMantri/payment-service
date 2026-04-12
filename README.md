@@ -1,193 +1,145 @@
 # Payment Service
-## Purpose
 
-payment-service manages the payment lifecycle for ticket bookings.
-It integrates with payment providers, tracks payment status, processes webhooks, and confirms seat bookings through the seat-allocation-service.
+Spring Boot service for creating payment records, creating provider orders, verifying client-side payment signatures, ingesting provider webhooks, and reconciling payment state.
 
-It does not manage seats or events; those belong to other services.
+This README reflects the code currently in the repository. Where the implementation is incomplete, that is called out explicitly instead of documenting an intended future flow as if it already exists.
 
-## Entities
+## What It Does Today
 
-### Payment
-Represents a payment attempt initiated for locked seats.
+- Exposes public payment APIs under `/payments`.
+- Exposes internal APIs under `/internal/v1/payments`.
+- Supports a single provider: `RAZORPAY`.
+- Persists payment records, idempotency keys, and processed webhook events in PostgreSQL.
+- Creates provider orders through Razorpay's `POST /v1/orders`.
+- Verifies payment signatures and webhook signatures using HMAC SHA-256.
+- Applies basic request authentication through servlet filters.
 
+## What Is Not Fully Implemented Yet
 
-#### Fields
+- No seat-allocation or booking service integration is present.
+- Payment initiation does not fetch authoritative pricing; it currently writes `amountMinor = 0` and `currency = INR`.
+- A successful `/payments/{paymentId}/verify` call does not mark the payment as `SUCCESS`; it only stores `providerPaymentId` and keeps the payment `PENDING`.
+- Webhook handling reports `bookingConfirmationTriggered=true` for success-like events, but no downstream booking confirmation call exists yet.
+- Reconciliation contains placeholder refund and lock-release hooks only.
+- The async end-to-end flow exists only partially through webhook status updates and reconcile handling.
 
-| Field	  | Type |	Description
-|:------------------|:----------:|--------------:|
-| id	              | UUID       |  Primary identifier
-| userId	          | UUID       |	User initiating payment
-| eventId	          | UUID       |	Associated event
-| lockId	          | UUID       |	Seat lock reference
-| amountMinor	      | BIGINT	   |  Amount in minor units of currency
-| currency	        | VARCHAR(3) |	ISO currency code
-| provider	        | VARCHAR	   | Payment provider
-| status	          | VARCHAR	   | Current payment status
-| providerOrderId   |	VARCHAR	   | Order reference from payment gateway
-| providerPaymentId	| VARCHAR	   | Payment reference from provider
-| failureReason	    | VARCHAR	   | Failure message if payment fails
-| createdAt	        | TIMESTAMP	 | Creation time
-| updatedAt	        | TIMESTAMP	 | Last update time
+## Runtime Shape
 
-### PaymentStatus
+- Java: `21`
+- Framework: Spring Boot `4.0.3`
+- Database: PostgreSQL
+- Build tool: Maven wrapper (`mvnw`, `mvnw.cmd`)
 
-- CREATED
-- PENDING
-- SUCCESS
-- FAILED
-- CANCELLED
-- SUCCESS_CONFIRMATION_FAILED
-- REFUNDED
+## Main Components
 
-### PaymentIdempotency
+- `PaymentController`: public endpoints for initiate, status, cancel, verify.
+- `InternalPaymentController`: internal webhook and reconcile endpoints.
+- `PaymentService`: core public payment lifecycle logic.
+- `InternalPaymentService`: webhook ingestion, duplicate detection, reconciliation.
+- `PaymentGatewayRegistry`: provider lookup.
+- `RazorpayPaymentGateway`: Razorpay-specific order creation and signature verification.
+- `HttpRazorpayApiClient`: outbound Razorpay REST client.
 
-Stores idempotency keys for safe retry of payment initiation.
+## Authentication
 
-| Field	| Type |	Description
-|:------------------|:----------:|--------------:|
-| id	| UUID	| Primary identifier
-| userId |	UUID |	Requesting user
-| idempotencyKey |	VARCHAR |	Client provided key
-| requestHash	 | VARCHAR |	Hash of request payload
-| paymentId |	UUID |	Associated payment
-| createdAt	| TIMESTAMP |	Record creation time
+Public endpoints under `/payments/*` require:
 
-### ProcessedWebhook
+- `Authorization: Bearer <jwt>`
 
-Tracks provider webhook events that have already been processed.
+The JWT filter validates:
 
-| Field |	Type |	Description
-|:------------------|:----------:|--------------:|
-| id	| UUID	| Primary identifier
-| provider |	VARCHAR |	Payment provider
-|providerEventId	| VARCHAR	| Unique provider event id
-| processedAt	| TIMESTAMP |	Processing time
+- HMAC SHA-256 signature
+- issuer claim `iss`
+- expiry claim `exp`
 
-Purpose: prevents duplicate webhook handling.
+Internal endpoints under `/internal/*` require:
 
-## API Contract
+- `X-Internal-Auth: <shared secret>`
 
-### Public APIs
+Exception:
 
-#### Initiate Payment
-Creates a payment attempt for locked seats.
+- `/internal/v1/payments/webhook` is intentionally excluded from the internal-auth filter.
+- The webhook instead requires a provider signature header.
 
-POST
-/api/v1/payments/initiate
+## Configuration
 
-Headers
+Primary properties from [application.properties](/d:/Scaler-Projects/payment-service/src/main/resources/application.properties:1):
 
-Authorization: Bearer <JWT>
-Idempotency-Key: <unique-key>
+- `spring.datasource.url`
+- `spring.datasource.username`
+- `spring.datasource.password`
+- `internal.api.shared-secret`
+- `security.jwt.secret`
+- `security.jwt.issuer` with default `user-service`
+- `payment.razorpay.base-url`
+- `payment.razorpay.key-id`
+- `payment.razorpay.key-secret`
+- `payment.razorpay.webhook-secret`
 
-Request
+Useful environment variable overrides:
 
-```
-{
-  "eventId": "uuid",
-  "lockId": "uuid",
-  "provider": "RAZORPAY"
-}
-```
+- `DB_URL`
+- `DB_USERNAME`
+- `DB_PASSWORD`
+- `RAZORPAY_BASE_URL`
+- `RAZORPAY_KEY_ID`
+- `RAZORPAY_KEY_SECRET`
+- `RAZORPAY_WEBHOOK_SECRET`
 
-Response
-```
-{
-  "paymentId": "uuid",
-  "eventId": "uuid",
-  "lockId": "uuid",
-  "amountMinor": 350000,
-  "currency": "INR",
-  "status": "PENDING",
-  "providerOrderId": "order_12345"
-}
-```
+## Data Model
 
-###### API flow
-```
-Client → Payment Service
-      identifiers only
+Core persisted entities:
 
-Payment Service → Seat Allocation
-      fetch amount + currency
+- `payments`
+- `payment_idempotency`
+- `processed_webhooks`
 
-Seat Allocation
-      authoritative price source
-```
+The checked-in schema is in [scripts/db.sql](/d:/Scaler-Projects/payment-service/scripts/db.sql:1).
 
-#### Get Payment Status
+Important mismatch:
 
-GET
-/api/v1/payments/{paymentId}
+- The SQL script enforces `amount_minor > 0`.
+- The current service implementation writes `amountMinor = 0` during payment initiation.
 
-Headers
+If you bootstrap strictly from `scripts/db.sql`, payment initiation will fail until pricing is integrated or the schema is adjusted.
 
-Authorization: Bearer <JWT>
+## Payment Lifecycle In Code
 
-Response
-```
-{
-  "paymentId": "uuid",
-  "eventId": "uuid",
-  "lockId": "uuid",
-  "amountMinor": 350000,
-  "currency": "INR",
-  "status": "SUCCESS",
-  "providerPaymentId": "pay_abc123"
-}
+1. `POST /payments/initiate`
+   Creates a local payment in `CREATED`, creates a Razorpay order, updates local status to `PENDING`, and stores the idempotency record.
+2. `POST /payments/{paymentId}/verify`
+   Verifies the provider signature from the client callback payload and stores `providerPaymentId`.
+3. `POST /internal/v1/payments/webhook`
+   Verifies the webhook signature, resolves the payment, updates local payment status, and records the webhook as processed.
+4. `POST /internal/v1/payments/{paymentId}/reconcile`
+   Handles `SUCCESS` and `SUCCESS_CONFIRMATION_FAILED` payments. Success path is local-only. Failure path marks the payment `REFUNDED` and reports lock release, but both downstream actions are still placeholders.
+
+## Payment Status Values
+
+- `CREATED`
+- `PENDING`
+- `SUCCESS`
+- `FAILED`
+- `CANCELLED`
+- `SUCCESS_CONFIRMATION_FAILED`
+- `REFUNDED`
+
+## Running Locally
+
+1. Start PostgreSQL and create the target database.
+2. Configure DB and Razorpay credentials through properties or environment variables.
+3. Run:
+
+```powershell
+.\mvnw.cmd spring-boot:run
 ```
 
-#### Cancel Payment Attempt
+Or run tests:
 
-POST
-/api/v1/payments/{paymentId}/cancel
-
-Cancels a payment that has not yet completed.
-
-### Internal APIs
-
-#### Payment Webhook (Provider Callback)
-
-POST
-/internal/v1/payments/webhook
-
-Purpose:
-- verify provider signature
-- update payment status
-- trigger seat booking confirmation
-
-#### Reconcile Payment
-
-POST
-/internal/v1/payments/{paymentId}/reconcile
-
-Purpose:
-retry booking confirmation if payment succeeded but downstream booking failed.
-
-# Internal Service Calls
-```
-Seat Allocation → Payment
-
-Not required.
-
-Payment → Seat Allocation
+```powershell
+.\mvnw.cmd test
 ```
 
-#### Get Lock Summary
-GET /internal/v1/locks/{lockId}/summary
+## API Reference
 
-Returns authoritative payable amount.
-
-#### Confirm Booking
-POST /internal/v1/locks/{lockId}/confirm-booking
-
-Used after payment success.
-
-Request
-```
-{
-  "paymentId": "uuid",
-  "providerPaymentId": "pay_abc123"
-}
-```
+Endpoint details and example payloads are in [API.md](/d:/Scaler-Projects/payment-service/API.md:1).
