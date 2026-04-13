@@ -7,6 +7,7 @@ import com.example.payment_service.exceptions.PaymentVerificationFailedException
 import com.example.payment_service.gateway.PaymentGateway;
 import com.example.payment_service.gateway.PaymentGatewayRegistry;
 import com.example.payment_service.gateway.model.PaymentWebhookNotification;
+import com.example.payment_service.integration.BookingOutcomeGateway;
 import com.example.payment_service.model.Payment;
 import com.example.payment_service.model.PaymentProvider;
 import com.example.payment_service.model.PaymentStatus;
@@ -46,6 +47,9 @@ class InternalPaymentServiceTest {
     @Mock
     private PaymentGateway paymentGateway;
 
+    @Mock
+    private BookingOutcomeGateway bookingOutcomeGateway;
+
     private InternalPaymentService internalPaymentService;
 
     @BeforeEach
@@ -53,7 +57,8 @@ class InternalPaymentServiceTest {
         internalPaymentService = new InternalPaymentService(
                 paymentRepository,
                 processedWebhookRepository,
-                paymentGatewayRegistry
+                paymentGatewayRegistry,
+                bookingOutcomeGateway
         );
     }
 
@@ -140,6 +145,9 @@ class InternalPaymentServiceTest {
         payment.setFailureReason("downstream booking failed");
         when(paymentRepository.findById(paymentId)).thenReturn(Optional.of(payment));
         when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        org.mockito.Mockito.doThrow(new IllegalStateException("downstream booking failed"))
+                .doNothing()
+                .when(bookingOutcomeGateway).notifyPaymentOutcome(payment);
 
         ReconcilePaymentResult response = internalPaymentService.reconcilePayment(paymentId);
 

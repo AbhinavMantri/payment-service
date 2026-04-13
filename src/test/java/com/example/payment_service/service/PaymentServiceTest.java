@@ -9,6 +9,7 @@ import com.example.payment_service.exceptions.PaymentVerificationFailedException
 import com.example.payment_service.gateway.PaymentGateway;
 import com.example.payment_service.gateway.PaymentGatewayRegistry;
 import com.example.payment_service.gateway.model.PaymentGatewayOrder;
+import com.example.payment_service.integration.BookingOutcomeGateway;
 import com.example.payment_service.model.Payment;
 import com.example.payment_service.model.PaymentIdempotency;
 import com.example.payment_service.model.PaymentProvider;
@@ -49,6 +50,9 @@ class PaymentServiceTest {
     @Mock
     private PaymentGateway paymentGateway;
 
+    @Mock
+    private BookingOutcomeGateway bookingOutcomeGateway;
+
     @InjectMocks
     private PaymentService paymentService;
 
@@ -85,7 +89,12 @@ class PaymentServiceTest {
         UUID paymentId = UUID.randomUUID();
         PaymentIdempotency idempotency = new PaymentIdempotency();
         idempotency.setPaymentId(paymentId);
-        idempotency.setRequestHash(request.getEventId() + ":" + request.getLockId() + ":" + request.getProvider());
+        idempotency.setRequestHash(request.getUserId()
+                + ":" + request.getEventId()
+                + ":" + request.getLockId()
+                + ":" + request.getAmountMinor()
+                + ":" + request.getCurrency()
+                + ":" + request.getProvider());
 
         Payment existingPayment = buildPayment(paymentId, PaymentStatus.SUCCESS);
         when(paymentGatewayRegistry.get(PaymentProvider.RAZORPAY)).thenReturn(paymentGateway);
@@ -191,7 +200,10 @@ class PaymentServiceTest {
     private InitiatePaymentRequest buildRequest() {
         InitiatePaymentRequest request = new InitiatePaymentRequest();
         request.setEventId(UUID.randomUUID());
+        request.setUserId(UUID.randomUUID());
         request.setLockId(UUID.randomUUID());
+        request.setAmountMinor(1000L);
+        request.setCurrency("INR");
         request.setProvider(PaymentProvider.RAZORPAY);
         return request;
     }
@@ -199,6 +211,7 @@ class PaymentServiceTest {
     private Payment buildPayment(UUID paymentId, PaymentStatus status) {
         Payment payment = new Payment();
         payment.setId(paymentId);
+        payment.setUserId(UUID.randomUUID());
         payment.setEventId(UUID.randomUUID());
         payment.setLockId(UUID.randomUUID());
         payment.setAmountMinor(1000L);

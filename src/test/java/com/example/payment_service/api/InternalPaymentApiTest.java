@@ -9,6 +9,7 @@ import com.example.payment_service.model.PaymentStatus;
 import com.example.payment_service.service.ReconcilePaymentResult;
 import com.example.payment_service.service.InternalPaymentService;
 import com.example.payment_service.service.JWTService;
+import com.example.payment_service.service.PaymentService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -37,6 +38,9 @@ class InternalPaymentApiTest {
 
     @MockitoBean
     private InternalPaymentService internalPaymentService;
+
+    @MockitoBean
+    private PaymentService paymentService;
 
     @MockitoBean
     private JWTService jwtService;

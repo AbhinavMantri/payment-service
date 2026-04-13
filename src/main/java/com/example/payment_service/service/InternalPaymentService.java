@@ -8,6 +8,7 @@ import com.example.payment_service.exceptions.PaymentVerificationFailedException
 import com.example.payment_service.gateway.PaymentGateway;
 import com.example.payment_service.gateway.PaymentGatewayRegistry;
 import com.example.payment_service.gateway.model.PaymentWebhookNotification;
+import com.example.payment_service.integration.BookingOutcomeGateway;
 import com.example.payment_service.model.Payment;
 import com.example.payment_service.model.PaymentProvider;
 import com.example.payment_service.model.PaymentStatus;
@@ -31,16 +32,19 @@ public class InternalPaymentService {
     private final PaymentRepository paymentRepository;
     private final ProcessedWebhookRepository processedWebhookRepository;
     private final PaymentGatewayRegistry paymentGatewayRegistry;
+    private final BookingOutcomeGateway bookingOutcomeGateway;
 
     @Autowired
     public InternalPaymentService(
             PaymentRepository paymentRepository,
             ProcessedWebhookRepository processedWebhookRepository,
-            PaymentGatewayRegistry paymentGatewayRegistry
+            PaymentGatewayRegistry paymentGatewayRegistry,
+            BookingOutcomeGateway bookingOutcomeGateway
     ) {
         this.paymentRepository = paymentRepository;
         this.processedWebhookRepository = processedWebhookRepository;
         this.paymentGatewayRegistry = paymentGatewayRegistry;
+        this.bookingOutcomeGateway = bookingOutcomeGateway;
     }
 
     @Transactional
@@ -90,11 +94,29 @@ public class InternalPaymentService {
             payment.setFailureReason(null);
         }
         paymentRepository.save(payment);
+        boolean bookingConfirmationTriggered = false;
+        try {
+            if (requiresBookingNotification(nextStatus)) {
+                bookingOutcomeGateway.notifyPaymentOutcome(payment);
+                bookingConfirmationTriggered = nextStatus == PaymentStatus.SUCCESS;
+            }
+        } catch (RuntimeException ex) {
+            if (nextStatus == PaymentStatus.SUCCESS) {
+                payment.setStatus(PaymentStatus.SUCCESS_CONFIRMATION_FAILED);
+                payment.setFailureReason(ex.getMessage());
+                paymentRepository.save(payment);
+                nextStatus = payment.getStatus();
+                bookingConfirmationTriggered = true;
+            } else {
+                payment.setFailureReason(ex.getMessage());
+                paymentRepository.save(payment);
+            }
+        }
         log.info(
                 "internal-webhook payment_updated paymentId={} nextStatus={} bookingConfirmationTriggered={}",
                 payment.getId(),
                 nextStatus,
-                nextStatus == PaymentStatus.SUCCESS || nextStatus == PaymentStatus.SUCCESS_CONFIRMATION_FAILED
+                bookingConfirmationTriggered
         );
 
         ProcessedWebhook processedWebhook = new ProcessedWebhook();
@@ -102,9 +124,6 @@ public class InternalPaymentService {
         processedWebhook.setProviderEventId(notification.getProviderEventId());
         processedWebhookRepository.save(processedWebhook);
         log.info("internal-webhook webhook_recorded provider={} providerEventId={}", provider, notification.getProviderEventId());
-
-        boolean bookingConfirmationTriggered =
-                nextStatus == PaymentStatus.SUCCESS || nextStatus == PaymentStatus.SUCCESS_CONFIRMATION_FAILED;
 
         return toResponse(
                 ResponseStatus.SUCCESS,
@@ -284,11 +303,7 @@ public class InternalPaymentService {
     }
 
     private void triggerBookingConfirmation(Payment payment) {
-        if (payment.getStatus() == PaymentStatus.SUCCESS_CONFIRMATION_FAILED
-                && payment.getFailureReason() != null
-                && !payment.getFailureReason().isBlank()) {
-            throw new IllegalStateException(payment.getFailureReason());
-        }
+        bookingOutcomeGateway.notifyPaymentOutcome(payment);
     }
 
     private void triggerRefund(Payment payment) {
@@ -296,6 +311,13 @@ public class InternalPaymentService {
     }
 
     private void releaseLock(Payment payment) {
-        // Placeholder for lock release integration.
+        bookingOutcomeGateway.notifyPaymentOutcome(payment);
+    }
+
+    private boolean requiresBookingNotification(PaymentStatus status) {
+        return status == PaymentStatus.SUCCESS
+                || status == PaymentStatus.FAILED
+                || status == PaymentStatus.CANCELLED
+                || status == PaymentStatus.REFUNDED;
     }
 }

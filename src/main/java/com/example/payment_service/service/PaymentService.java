@@ -10,6 +10,7 @@ import com.example.payment_service.gateway.PaymentGateway;
 import com.example.payment_service.gateway.PaymentGatewayRegistry;
 import com.example.payment_service.gateway.model.CreatePaymentOrderRequest;
 import com.example.payment_service.gateway.model.PaymentGatewayOrder;
+import com.example.payment_service.integration.BookingOutcomeGateway;
 import com.example.payment_service.model.Payment;
 import com.example.payment_service.model.PaymentIdempotency;
 import com.example.payment_service.model.PaymentStatus;
@@ -23,7 +24,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -31,22 +31,22 @@ import java.util.UUID;
 @Service
 @Slf4j
 public class PaymentService {
-    private static final UUID DEFAULT_USER_ID =
-            UUID.nameUUIDFromBytes("payment-service-default-user".getBytes(StandardCharsets.UTF_8));
-
     private final PaymentIdempotencyRepository paymentIdempotencyRepository;
     private final PaymentRepository paymentRepository;
     private final PaymentGatewayRegistry paymentGatewayRegistry;
+    private final BookingOutcomeGateway bookingOutcomeGateway;
 
     @Autowired
     public PaymentService(
             PaymentIdempotencyRepository paymentIdempotencyRepository,
             PaymentRepository paymentRepository,
-            PaymentGatewayRegistry paymentGatewayRegistry
+            PaymentGatewayRegistry paymentGatewayRegistry,
+            BookingOutcomeGateway bookingOutcomeGateway
     ) {
         this.paymentIdempotencyRepository = paymentIdempotencyRepository;
         this.paymentRepository = paymentRepository;
         this.paymentGatewayRegistry = paymentGatewayRegistry;
+        this.bookingOutcomeGateway = bookingOutcomeGateway;
     }
 
     @Transactional
@@ -84,13 +84,12 @@ public class PaymentService {
             );
             return to(existingPayment);
         }
-        //TODO: fetch lock summary from seat allocation service
         Payment payment = new Payment();
-        payment.setUserId(DEFAULT_USER_ID);
+        payment.setUserId(request.getUserId());
         payment.setEventId(request.getEventId());
         payment.setLockId(request.getLockId());
-        payment.setAmountMinor(0L);
-        payment.setCurrency("INR");
+        payment.setAmountMinor(request.getAmountMinor());
+        payment.setCurrency(request.getCurrency().trim().toUpperCase());
         payment.setProvider(request.getProvider());
         payment.setStatus(PaymentStatus.CREATED);
         Payment savedPayment = paymentRepository.save(payment);
@@ -122,7 +121,7 @@ public class PaymentService {
         );
 
         PaymentIdempotency paymentIdempotency = new PaymentIdempotency();
-        paymentIdempotency.setUserId(DEFAULT_USER_ID);
+        paymentIdempotency.setUserId(request.getUserId());
         paymentIdempotency.setIdempotencyKey(idempotencyKey);
         paymentIdempotency.setRequestHash(requestHash);
         paymentIdempotency.setPaymentId(savedPayment.getId());
@@ -202,18 +201,25 @@ public class PaymentService {
         paymentCancellation.setPaymentId(payment.getId());
         paymentCancellation.setStatus(payment.getStatus());
         paymentCancellation.setLockReleased(payment.getStatus() == PaymentStatus.CANCELLED);
+        if (payment.getStatus() == PaymentStatus.CANCELLED) {
+            bookingOutcomeGateway.notifyPaymentOutcome(payment);
+        }
         log.info(
                 "payment-cancel service_end paymentId={} paymentStatus={} lockReleased={}",
                 paymentId,
                 paymentCancellation.getStatus(),
                 paymentCancellation.getLockReleased()
         );
-        // TODO: Integrate with lock service to release the lock if payment is cancelled
         return paymentCancellation;
     }
 
     private String buildRequestHash(InitiatePaymentRequest request) {
-        return request.getEventId() + ":" + request.getLockId() + ":" + request.getProvider();
+        return request.getUserId()
+                + ":" + request.getEventId()
+                + ":" + request.getLockId()
+                + ":" + request.getAmountMinor()
+                + ":" + request.getCurrency().trim().toUpperCase()
+                + ":" + request.getProvider();
     }
 
     private PaymentSummary to(Payment payment) {

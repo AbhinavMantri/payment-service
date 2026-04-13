@@ -53,11 +53,14 @@ class PaymentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
+                                  "userId": "%s",
                                   "eventId": "%s",
                                   "lockId": "%s",
+                                  "amountMinor": 1000,
+                                  "currency": "INR",
                                   "provider": "%s"
                                 }
-                                """.formatted(UUID.randomUUID(), UUID.randomUUID(), PaymentProvider.RAZORPAY)))
+                                """.formatted(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), PaymentProvider.RAZORPAY)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("SUCCESS"))
                 .andExpect(jsonPath("$.payment.paymentId").value(paymentId.toString()));
@@ -84,11 +87,14 @@ class PaymentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
+                                  "userId": "%s",
                                   "eventId": "%s",
                                   "lockId": "%s",
+                                  "amountMinor": 1000,
+                                  "currency": "INR",
                                   "provider": "%s"
                                 }
-                                """.formatted(UUID.randomUUID(), UUID.randomUUID(), PaymentProvider.RAZORPAY)))
+                                """.formatted(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), PaymentProvider.RAZORPAY)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.status").value("FAILURE"))
                 .andExpect(jsonPath("$.message").value("duplicate"));
