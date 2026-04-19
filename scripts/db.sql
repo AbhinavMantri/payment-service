@@ -13,9 +13,9 @@ CREATE TABLE IF NOT EXISTS payments (
   currency             VARCHAR(3) NOT NULL,
   provider             VARCHAR(30) NOT NULL,
   status               VARCHAR(40) NOT NULL,
-  provider_order_id    VARCHAR(120),
-  provider_payment_id  VARCHAR(120),
-  failure_reason       VARCHAR(255),
+  provider_order_id    VARCHAR(128),
+  provider_payment_id  VARCHAR(128),
+  failure_reason       VARCHAR(512),
   created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
@@ -56,7 +56,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_payments_provider_payment
 CREATE TABLE IF NOT EXISTS payment_idempotency (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id           UUID NOT NULL,
-  idempotency_key   VARCHAR(120) NOT NULL,
+  idempotency_key   VARCHAR(128) NOT NULL,
   request_hash      VARCHAR(128) NOT NULL,
   payment_id        UUID NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS payment_idempotency (
 CREATE TABLE IF NOT EXISTS processed_webhooks (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   provider           VARCHAR(30) NOT NULL,
-  provider_event_id  VARCHAR(120) NOT NULL,
+  provider_event_id  VARCHAR(128) NOT NULL,
   processed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (provider, provider_event_id)
 );
