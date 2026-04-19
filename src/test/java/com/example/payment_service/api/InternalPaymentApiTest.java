@@ -6,6 +6,7 @@ import com.example.payment_service.dto.WebhookResponse;
 import com.example.payment_service.dto.common.ResponseStatus;
 import com.example.payment_service.filter.InternalApiAuthenticationFilter;
 import com.example.payment_service.model.PaymentStatus;
+import com.example.payment_service.model.PaymentSummary;
 import com.example.payment_service.service.ReconcilePaymentResult;
 import com.example.payment_service.service.InternalPaymentService;
 import com.example.payment_service.service.JWTService;
@@ -44,6 +45,36 @@ class InternalPaymentApiTest {
 
     @MockitoBean
     private JWTService jwtService;
+
+    @Test
+    void initiatePaymentWithInternalAuthReturnsCreatedPayload() throws Exception {
+        UUID paymentId = UUID.randomUUID();
+        PaymentSummary paymentSummary = new PaymentSummary();
+        paymentSummary.setPaymentId(paymentId);
+        paymentSummary.setStatus(PaymentStatus.PENDING);
+        paymentSummary.setProviderOrderId("order_123");
+
+        when(paymentService.initiatePayment(any(), any())).thenReturn(paymentSummary);
+
+        mockMvc.perform(post("/internal/v1/payments/initiate")
+                        .header("X-Internal-Auth", "test-shared-secret")
+                        .header("Idempotency-Key", "idem-1")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId": "%s",
+                                  "eventId": "%s",
+                                  "lockId": "%s",
+                                  "amountMinor": 3000,
+                                  "currency": "INR",
+                                  "provider": "RAZORPAY"
+                                }
+                                """.formatted(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("SUCCESS"))
+                .andExpect(jsonPath("$.payment.paymentId").value(paymentId.toString()))
+                .andExpect(jsonPath("$.payment.providerOrderId").value("order_123"));
+    }
 
     @Test
     void webhookRequestWithoutInternalAuthHeaderIsAllowedWhenSignatureIsPresent() throws Exception {
