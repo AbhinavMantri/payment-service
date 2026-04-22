@@ -1,0 +1,175 @@
+package com.example.payment_service.controller;
+
+import com.example.payment_service.dto.InitiatePaymentRequest;
+import com.example.payment_service.dto.PaymentSummaryResponse;
+import com.example.payment_service.dto.WebhookResponse;
+import com.example.payment_service.dto.common.ResponseStatus;
+import com.example.payment_service.exceptions.PaymentIdempotencyAlreadyUsedException;
+import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
+import com.example.payment_service.model.PaymentProvider;
+import com.example.payment_service.model.PaymentStatus;
+import com.example.payment_service.model.PaymentSummary;
+import com.example.payment_service.service.InternalPaymentService;
+import com.example.payment_service.service.PaymentService;
+import com.example.payment_service.service.ReconcilePaymentResult;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+@ExtendWith(MockitoExtension.class)
+class InternalPaymentControllerTest {
+
+    @Mock
+    private InternalPaymentService internalPaymentService;
+
+    @Mock
+    private PaymentService paymentService;
+
+    @InjectMocks
+    private InternalPaymentController internalPaymentController;
+
+    @Test
+    void initiatePaymentReturnsCreatedResponse() {
+        PaymentSummary paymentSummary = new PaymentSummary();
+        paymentSummary.setPaymentId(UUID.randomUUID());
+        paymentSummary.setStatus(PaymentStatus.PENDING);
+
+        when(paymentService.initiatePayment(eq("idem-1"), any(InitiatePaymentRequest.class))).thenReturn(paymentSummary);
+
+        ResponseEntity<PaymentSummaryResponse> response =
+                internalPaymentController.initiatePayment("idem-1", new InitiatePaymentRequest());
+
+        assertEquals(HttpStatus.CREATED, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(ResponseStatus.SUCCESS, response.getBody().getStatus());
+        assertEquals(paymentSummary, response.getBody().getPayment());
+    }
+
+    @Test
+    void initiatePaymentReturnsConflictForIdempotencyReuse() {
+        when(paymentService.initiatePayment(eq("idem-1"), any(InitiatePaymentRequest.class)))
+                .thenThrow(new PaymentIdempotencyAlreadyUsedException("duplicate"));
+
+        ResponseEntity<PaymentSummaryResponse> response =
+                internalPaymentController.initiatePayment("idem-1", new InitiatePaymentRequest());
+
+        assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(ResponseStatus.FAILURE, response.getBody().getStatus());
+        assertEquals("duplicate", response.getBody().getMessage());
+    }
+
+    @Test
+    void handleWebhookDefaultsProviderToRazorpay() {
+        WebhookResponse serviceResponse = WebhookResponse.builder()
+                .status(ResponseStatus.SUCCESS)
+                .message("Webhook processed successfully")
+                .paymentStatus(PaymentStatus.SUCCESS.name())
+                .build();
+        when(internalPaymentService.handleWebhook(eq(PaymentProvider.RAZORPAY), eq("{}"), eq("signature")))
+                .thenReturn(serviceResponse);
+
+        ResponseEntity<WebhookResponse> response = internalPaymentController.handleWebhook(null, "signature", "{}");
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(ResponseStatus.SUCCESS, response.getBody().getStatus());
+        verify(internalPaymentService).handleWebhook(PaymentProvider.RAZORPAY, "{}", "signature");
+    }
+
+    @Test
+    void handleWebhookRejectsMissingSignature() {
+        ResponseEntity<WebhookResponse> response = internalPaymentController.handleWebhook(null, null, "{}");
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals(ResponseStatus.FAILURE, response.getBody().getStatus());
+        assertEquals("Missing payment signature header", response.getBody().getMessage());
+        verifyNoInteractions(internalPaymentService);
+    }
+
+    @Test
+    void handleWebhookRejectsUnsupportedProvider() {
+        ResponseEntity<WebhookResponse> response = internalPaymentController.handleWebhook("foo", "signature", "{}");
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals("Unsupported payment provider: foo", response.getBody().getMessage());
+        verifyNoInteractions(internalPaymentService);
+    }
+
+    @Test
+    void handleWebhookMapsInvalidSignatureToUnauthorized() {
+        when(internalPaymentService.handleWebhook(any(), any(), any()))
+                .thenThrow(new PaymentVerificationFailedException("Invalid webhook signature"));
+
+        ResponseEntity<WebhookResponse> response = internalPaymentController.handleWebhook(null, "signature", "{}");
+
+        assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
+        assertEquals("Invalid webhook signature", response.getBody().getMessage());
+    }
+
+    @Test
+    void handleWebhookMapsMissingPaymentToNotFound() {
+        when(internalPaymentService.handleWebhook(any(), any(), any()))
+                .thenThrow(new PaymentNotFoundException("Payment not found"));
+
+        ResponseEntity<WebhookResponse> response = internalPaymentController.handleWebhook(null, "signature", "{}");
+
+        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
+        assertEquals("Payment not found", response.getBody().getMessage());
+    }
+
+    @Test
+    void reconcilePaymentReturnsOkForSuccessfulResult() {
+        UUID paymentId = UUID.randomUUID();
+        when(internalPaymentService.reconcilePayment(paymentId)).thenReturn(ReconcilePaymentResult.builder()
+                .paymentId(paymentId)
+                .paymentStatus(PaymentStatus.SUCCESS)
+                .success(true)
+                .bookingConfirmationTriggered(true)
+                .message("Booking confirmation completed successfully")
+                .build());
+
+        var response = internalPaymentController.reconcilePayment(paymentId);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(ResponseStatus.SUCCESS, response.getBody().getStatus());
+        assertEquals(paymentId, response.getBody().getPaymentId());
+    }
+
+    @Test
+    void reconcilePaymentReturnsBadRequestForFailureResult() {
+        UUID paymentId = UUID.randomUUID();
+        when(internalPaymentService.reconcilePayment(paymentId)).thenReturn(ReconcilePaymentResult.builder()
+                .paymentId(paymentId)
+                .paymentStatus(PaymentStatus.REFUNDED)
+                .success(false)
+                .bookingConfirmationTriggered(true)
+                .refunded(true)
+                .lockReleased(true)
+                .message("Booking confirmation failed. Refund triggered and lock released")
+                .build());
+
+        var response = internalPaymentController.reconcilePayment(paymentId);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals(ResponseStatus.FAILURE, response.getBody().getStatus());
+        assertEquals(PaymentStatus.REFUNDED, response.getBody().getPaymentStatus());
+        assertEquals(true, response.getBody().isRefunded());
+        assertEquals(true, response.getBody().isLockReleased());
+    }
+}

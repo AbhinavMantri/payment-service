@@ -1,0 +1,140 @@
+package com.example.payment_service.controller;
+
+import com.example.payment_service.dto.InitiatePaymentRequest;
+import com.example.payment_service.dto.PaymentReconcileResponse;
+import com.example.payment_service.dto.PaymentSummaryResponse;
+import com.example.payment_service.dto.WebhookResponse;
+import com.example.payment_service.dto.common.ResponseStatus;
+import com.example.payment_service.exceptions.DuplicatePaymentFoundException;
+import com.example.payment_service.exceptions.PaymentIdempotencyAlreadyUsedException;
+import com.example.payment_service.exceptions.PaymentNotFoundException;
+import com.example.payment_service.exceptions.PaymentVerificationFailedException;
+import com.example.payment_service.model.PaymentProvider;
+import com.example.payment_service.model.PaymentSummary;
+import com.example.payment_service.service.InternalPaymentService;
+import com.example.payment_service.service.PaymentService;
+import com.example.payment_service.service.ReconcilePaymentResult;
+import jakarta.validation.Valid;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/internal/v1/payments")
+@Slf4j
+public class InternalPaymentController {
+    private static final PaymentProvider DEFAULT_PROVIDER = PaymentProvider.RAZORPAY;
+
+    private final InternalPaymentService internalPaymentService;
+    private final PaymentService paymentService;
+
+    public InternalPaymentController(InternalPaymentService internalPaymentService, PaymentService paymentService) {
+        this.internalPaymentService = internalPaymentService;
+        this.paymentService = paymentService;
+    }
+
+    @PostMapping("/initiate")
+    public ResponseEntity<PaymentSummaryResponse> initiatePayment(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody @Valid InitiatePaymentRequest request
+    ) {
+        PaymentSummaryResponse response = new PaymentSummaryResponse();
+        try {
+            PaymentSummary paymentSummary = paymentService.initiatePayment(idempotencyKey, request);
+            response.setStatus(ResponseStatus.SUCCESS);
+            response.setPayment(paymentSummary);
+            response.setMessage("Payment initiated successfully");
+            return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        } catch (PaymentNotFoundException ex) {
+            response.setStatus(ResponseStatus.FAILURE);
+            response.setMessage(ex.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        } catch (PaymentIdempotencyAlreadyUsedException ex) {
+            response.setStatus(ResponseStatus.FAILURE);
+            response.setMessage(ex.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+        }
+    }
+
+    @PostMapping("/webhook")
+    public ResponseEntity<WebhookResponse> handleWebhook(
+            @RequestHeader(value = "X-Payment-Provider", required = false) String providerHeader,
+            @RequestHeader(value = "X-Payment-Signature", required = false) String signature,
+            @RequestBody String rawPayload
+    ) {
+        if (signature == null || signature.isBlank()) {
+            return ResponseEntity.badRequest().body(webhookFailure("Missing payment signature header"));
+        }
+
+        try {
+            PaymentProvider provider = parseProvider(providerHeader);
+            WebhookResponse response = internalPaymentService.handleWebhook(provider, rawPayload, signature);
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().body(webhookFailure(ex.getMessage()));
+        } catch (PaymentVerificationFailedException ex) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(webhookFailure(ex.getMessage()));
+        } catch (PaymentNotFoundException ex) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(webhookFailure(ex.getMessage()));
+        } catch (DuplicatePaymentFoundException ex) {
+            WebhookResponse response = webhookFailure(ex.getMessage());
+            response.setDuplicate(true);
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+        }
+    }
+
+    @PostMapping("/{paymentId}/reconcile")
+    public ResponseEntity<PaymentReconcileResponse> reconcilePayment(@PathVariable UUID paymentId) {
+        try {
+            ReconcilePaymentResult result = internalPaymentService.reconcilePayment(paymentId);
+            PaymentReconcileResponse response = toReconcileResponse(result);
+            HttpStatus httpStatus = result.isSuccess() ? HttpStatus.OK : HttpStatus.BAD_REQUEST;
+            return ResponseEntity.status(httpStatus).body(response);
+        } catch (PaymentNotFoundException ex) {
+            PaymentReconcileResponse response = new PaymentReconcileResponse();
+            response.setStatus(ResponseStatus.FAILURE);
+            response.setMessage(ex.getMessage());
+            response.setPaymentId(paymentId);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+        }
+    }
+
+    private PaymentProvider parseProvider(String providerHeader) {
+        if (providerHeader == null || providerHeader.isBlank()) {
+            return DEFAULT_PROVIDER;
+        }
+        try {
+            return PaymentProvider.valueOf(providerHeader.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalArgumentException("Unsupported payment provider: " + providerHeader);
+        }
+    }
+
+    private WebhookResponse webhookFailure(String message) {
+        return WebhookResponse.builder()
+                .status(ResponseStatus.FAILURE)
+                .message(message)
+                .duplicate(false)
+                .build();
+    }
+
+    private PaymentReconcileResponse toReconcileResponse(ReconcilePaymentResult result) {
+        PaymentReconcileResponse response = new PaymentReconcileResponse();
+        response.setStatus(result.isSuccess() ? ResponseStatus.SUCCESS : ResponseStatus.FAILURE);
+        response.setMessage(result.getMessage());
+        response.setPaymentId(result.getPaymentId());
+        response.setPaymentStatus(result.getPaymentStatus());
+        response.setBookingConfirmationTriggered(result.isBookingConfirmationTriggered());
+        response.setRefunded(result.isRefunded());
+        response.setLockReleased(result.isLockReleased());
+        return response;
+    }
+}
